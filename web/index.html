@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Error Analysis Dashboard - Vortexai</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css">
+</head>
+<body>
+    <div class="dashboard-container">
+        <!-- Header -->
+        <header class="dashboard-header">
+            <div class="header-content">
+                <div class="header-left">
+                    <h1><i class="fas fa-shield-alt"></i> Error Analysis Dashboard</h1>
+                    <p class="subtitle">Vortexai Service Monitoring</p>
+                </div>
+                <div class="header-right">
+                    <div class="status-indicator" id="status-indicator">
+                        <i class="fas fa-circle"></i>
+                        <span>Loading...</span>
+                    </div>
+                    <div class="last-updated" id="last-updated">
+                        Last updated: <span id="last-updated-time">-</span>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <!-- Navigation -->
+        <nav class="dashboard-nav">
+            <div class="nav-content">
+                <div class="nav-tabs">
+                    <button class="nav-tab active" data-tab="overview">
+                        <i class="fas fa-chart-pie"></i> Overview
+                    </button>
+                    <button class="nav-tab" data-tab="issues">
+                        <i class="fas fa-exclamation-triangle"></i> Issues
+                    </button>
+                    <button class="nav-tab" data-tab="analysis">
+                        <i class="fas fa-search"></i> Analysis
+                    </button>
+                    <button class="nav-tab" data-tab="settings">
+                        <i class="fas fa-cog"></i> Settings
+                    </button>
+                </div>
+                <div class="nav-actions">
+                    <button class="btn btn-primary" id="refresh-btn">
+                        <i class="fas fa-sync-alt"></i> Refresh
+                    </button>
+                    <button class="btn btn-secondary" id="export-btn">
+                        <i class="fas fa-download"></i> Export
+                    </button>
+                </div>
+            </div>
+        </nav>
+
+        <!-- Main Content -->
+        <main class="dashboard-main">
+            <!-- Overview Tab -->
+            <div class="tab-content active" id="overview-tab">
+                <!-- Summary Cards -->
+                <div class="summary-grid">
+                    <div class="summary-card">
+                        <div class="card-header">
+                            <h3>Total Issues</h3>
+                            <i class="fas fa-list"></i>
+                        </div>
+                        <div class="card-content">
+                            <div class="metric-value" id="total-issues">-</div>
+                            <div class="metric-change" id="total-issues-change">
+                                <i class="fas fa-arrow-up"></i> 0%
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="summary-card level-1">
+                        <div class="card-header">
+                            <h3>Level 1 Issues</h3>
+                            <i class="fas fa-info-circle"></i>
+                        </div>
+                        <div class="card-content">
+                            <div class="metric-value" id="level-1-issues">-</div>
+                            <div class="metric-description">Low Priority</div>
+                        </div>
+                    </div>
+
+                    <div class="summary-card level-2">
+                        <div class="card-header">
+                            <h3>Level 2 Issues</h3>
+                            <i class="fas fa-exclamation-triangle"></i>
+                        </div>
+                        <div class="card-content">
+                            <div class="metric-value" id="level-2-issues">-</div>
+                            <div class="metric-description">Medium Priority</div>
+                        </div>
+                    </div>
+
+                    <div class="summary-card level-3">
+                        <div class="card-header">
+                            <h3>Level 3 Issues</h3>
+                            <i class="fas fa-exclamation-circle"></i>
+                        </div>
+                        <div class="card-content">
+                            <div class="metric-value" id="level-3-issues">-</div>
+                            <div class="metric-description">High Priority</div>
+                        </div>
+                    </div>
+
+                    <div class="summary-card action-needed">
+                        <div class="card-header">
+                            <h3>Action Required</h3>
+                            <i class="fas fa-user-check"></i>
+                        </div>
+                        <div class="card-content">
+                            <div class="metric-value" id="action-needed">-</div>
+                            <div class="metric-description">Human Intervention</div>
+                        </div>
+                    </div>
+
+                    <div class="summary-card cost">
+                        <div class="card-header">
+                            <h3>Total Cost</h3>
+                            <i class="fas fa-dollar-sign"></i>
+                        </div>
+                        <div class="card-content">
+                            <div class="metric-value" id="total-cost">-</div>
+                            <div class="metric-description">Analysis Cost</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Charts Section -->
+                <div class="charts-section">
+                    <div class="chart-container">
+                        <h3>Severity Distribution</h3>
+                        <canvas id="severity-chart"></canvas>
+                    </div>
+                    <div class="chart-container">
+                        <h3>Cost Breakdown</h3>
+                        <canvas id="cost-chart"></canvas>
+                    </div>
+                </div>
+
+                <!-- Recent Issues -->
+                <div class="recent-issues">
+                    <h3>Recent Issues</h3>
+                    <div class="issues-list" id="recent-issues-list">
+                        <div class="loading">Loading recent issues...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Issues Tab -->
+            <div class="tab-content" id="issues-tab">
+                <div class="issues-header">
+                    <h2>Error Issues</h2>
+                    <div class="issues-controls">
+                        <div class="search-box">
+                            <i class="fas fa-search"></i>
+                            <input type="text" id="search-input" placeholder="Search issues...">
+                        </div>
+                        <div class="filter-controls">
+                            <select id="severity-filter">
+                                <option value="">All Severities</option>
+                                <option value="LEVEL_1">Level 1</option>
+                                <option value="LEVEL_2">Level 2</option>
+                                <option value="LEVEL_3">Level 3</option>
+                            </select>
+                            <select id="service-filter">
+                                <option value="">All Services</option>
+                            </select>
+                            <select id="sort-filter">
+                                <option value="severity">Sort by Severity</option>
+                                <option value="timestamp">Sort by Time</option>
+                                <option value="cost">Sort by Cost</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="issues-container" id="issues-container">
+                    <div class="loading">Loading issues...</div>
+                </div>
+
+                <!-- Pagination -->
+                <div class="pagination" id="pagination">
+                    <button class="btn btn-secondary" id="prev-page" disabled>
+                        <i class="fas fa-chevron-left"></i> Previous
+                    </button>
+                    <span class="page-info" id="page-info">Page 1 of 1</span>
+                    <button class="btn btn-secondary" id="next-page" disabled>
+                        Next <i class="fas fa-chevron-right"></i>
+                    </button>
+                </div>
+            </div>
+
+            <!-- Analysis Tab -->
+            <div class="tab-content" id="analysis-tab">
+                <div class="analysis-header">
+                    <h2>Analysis Details</h2>
+                    <div class="analysis-controls">
+                        <button class="btn btn-primary" id="run-analysis-btn">
+                            <i class="fas fa-play"></i> Run Analysis
+                        </button>
+                        <button class="btn btn-secondary" id="view-logs-btn">
+                            <i class="fas fa-file-alt"></i> View Logs
+                        </button>
+                    </div>
+                </div>
+
+                <div class="analysis-content">
+                    <div class="analysis-stats">
+                        <div class="stat-item">
+                            <label>Analysis Date:</label>
+                            <span id="analysis-date">-</span>
+                        </div>
+                        <div class="stat-item">
+                            <label>Date Range:</label>
+                            <span id="analysis-range">-</span>
+                        </div>
+                        <div class="stat-item">
+                            <label>Site:</label>
+                            <span id="analysis-site">-</span>
+                        </div>
+                        <div class="stat-item">
+                            <label>Processing Time:</label>
+                            <span id="processing-time">-</span>
+                        </div>
+                    </div>
+
+                    <div class="analysis-details" id="analysis-details">
+                        <div class="loading">Loading analysis details...</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Settings Tab -->
+            <div class="tab-content" id="settings-tab">
+                <div class="settings-header">
+                    <h2>Dashboard Settings</h2>
+                </div>
+
+                <div class="settings-content">
+                    <div class="settings-section">
+                        <h3>Display Settings</h3>
+                        <div class="setting-item">
+                            <label for="auto-refresh">Auto Refresh</label>
+                            <input type="checkbox" id="auto-refresh" checked>
+                            <span class="setting-description">Automatically refresh data every 30 seconds</span>
+                        </div>
+                        <div class="setting-item">
+                            <label for="items-per-page">Items per Page</label>
+                            <select id="items-per-page">
+                                <option value="10">10</option>
+                                <option value="25" selected>25</option>
+                                <option value="50">50</option>
+                                <option value="100">100</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div class="settings-section">
+                        <h3>Filter Settings</h3>
+                        <div class="setting-item">
+                            <label for="default-severity">Default Severity Filter</label>
+                            <select id="default-severity">
+                                <option value="">All</option>
+                                <option value="LEVEL_1">Level 1</option>
+                                <option value="LEVEL_2">Level 2</option>
+                                <option value="LEVEL_3">Level 3</option>
+                            </select>
+                        </div>
+                        <div class="setting-item">
+                            <label for="show-resolved">Show Resolved Issues</label>
+                            <input type="checkbox" id="show-resolved">
+                        </div>
+                    </div>
+
+                    <div class="settings-section">
+                        <h3>Export Settings</h3>
+                        <div class="setting-item">
+                            <label for="export-format">Default Export Format</label>
+                            <select id="export-format">
+                                <option value="json">JSON</option>
+                                <option value="csv">CSV</option>
+                                <option value="pdf">PDF</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Issue Detail Modal -->
+        <div class="modal" id="issue-modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h3 id="modal-title">Issue Details</h3>
+                    <button class="modal-close" id="modal-close">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                <div class="modal-body" id="modal-body">
+                    <div class="loading">Loading issue details...</div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn btn-secondary" id="modal-close-btn">Close</button>
+                    <button class="btn btn-primary" id="modal-action-btn">Take Action</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Loading Overlay -->
+        <div class="loading-overlay" id="loading-overlay">
+            <div class="loading-spinner">
+                <i class="fas fa-spinner fa-spin"></i>
+                <p>Loading...</p>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>

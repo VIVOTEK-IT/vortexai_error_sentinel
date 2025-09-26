@@ -1,0 +1,88 @@
+{
+  "mappings": {
+    "properties": {
+      "message_id": {
+        "type": "keyword",
+        "_comment": "Unique identifier for the error message"
+      },
+      "timestamp": {
+        "type": "date",
+        "_comment": "Timestamp when the error occurred"
+      },
+      "error_message": {
+        "type": "text",
+        "fields": {
+          "keyword": {
+            "type": "keyword"
+          }
+        },
+        "_comment": "The error message content"
+      },
+      "error_message_hash": {
+        "type": "long",
+        "_comment": "The hash of the error message for deduplication"
+      },
+      "traceback": {
+        "type": "text",
+        "_comment": "The stack trace of the error"
+      },
+      "traceback_hash": {
+        "type": "long",
+        "_comment": "The hash of the traceback for deduplication"
+      },
+      "error_type": {
+        "type": "keyword",
+        "_comment": "The type of the error (e.g., ValueError, ConnectionError)"
+      },
+      "error_type_hash": {
+        "type": "long",
+        "_comment": "The hash of the error type"
+      },
+      "site": {
+        "type": "keyword",
+        "_comment": "The site of the error message. It must be one of the following: 'dev', 'stage', 'prod'"
+      },
+      "service": {
+        "type": "text",
+        "fields": {
+          "keyword": {
+            "type": "keyword"
+          }
+        },
+        "_comment": "The composed service name from log_group and module_name (log_group.module_name)"
+      },
+      "index_name": {
+        "type": "keyword",
+        "_comment": "The index name of the error message"
+      },
+      "topic": {
+        "type": "keyword",
+        "_comment": "The topic of the error message. Not used for now."
+      },
+      "count": {
+        "type": "integer",
+        "_comment": "The count of the error message within 5 minutes"
+      },
+      "request_id": {
+        "type": "keyword",
+        "_comment": "The request ID associated with the error"
+      },
+      "category": {
+        "type": "keyword",
+        "_comment": "The category of the error (e.g., ERROR, WARNING, FATAL)"
+      },
+      "log_group": {
+        "type": "keyword",
+        "_comment": "The log group name"
+      },
+      "module_name": {
+        "type": "keyword",
+        "_comment": "The module name where the error occurred"
+      },
+      "version": {
+        "type": "keyword",
+        "_comment": "The version of the application"
+      }
+    }
+  }
+}

@@ -1,0 +1,84 @@
+version: '3.8'
+
+services:
+  # Error Monitor Application
+  error-monitor:
+    build: .
+    container_name: error-monitor-app
+    env_file: .env
+    environment:
+      # OpenAI Configuration
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      # OpenSearch Configuration
+      - OPENSEARCH_HOST=${OPENSEARCH_HOST}
+      - OPENSEARCH_PORT=${OPENSEARCH_PORT}
+      - OPENSEARCH_USERNAME=${OPENSEARCH_USERNAME}
+      - OPENSEARCH_PASSWORD=${OPENSEARCH_PASSWORD}
+      - OPENSEARCH_USE_SSL=${OPENSEARCH_USE_SSL}
+      - OPENSEARCH_VERIFY_CERTS=${OPENSEARCH_VERIFY_CERTS}
+      - OPENSEARCH_INDEX_PATTERN=${OPENSEARCH_INDEX_PATTERN}
+      # RDS Configuration
+      - RDS_HOST=${RDS_HOST}
+      - RDS_PORT=${RDS_PORT}
+      - RDS_DATABASE=${RDS_DATABASE}
+      - RDS_USER=${RDS_USER}
+      - RDS_PASSWORD=${RDS_PASSWORD}
+      - RDS_SSL_MODE=${RDS_SSL_MODE}
+      # Jira Configuration
+      - JIRA_SERVER_URL=${JIRA_SERVER_URL}
+      - JIRA_USERNAME=${JIRA_USERNAME}
+      - JIRA_API_TOKEN=${JIRA_API_TOKEN}
+      - JIRA_PROJECT_KEY=${JIRA_PROJECT_KEY}
+      # Vector Database Configuration
+      - VECTOR_DB_PERSIST_DIRECTORY=${VECTOR_DB_PERSIST_DIRECTORY}
+      - VECTOR_DB_COLLECTION_NAME=${VECTOR_DB_COLLECTION_NAME}
+      - VECTOR_DB_DISTANCE_METRIC=${VECTOR_DB_DISTANCE_METRIC}
+      # RAG Configuration
+      - RAG_CHUNK_SIZE=${RAG_CHUNK_SIZE}
+      - RAG_CHUNK_OVERLAP=${RAG_CHUNK_OVERLAP}
+      - RAG_MAX_CHUNKS=${RAG_MAX_CHUNKS}
+      - RAG_SIMILARITY_THRESHOLD=${RAG_SIMILARITY_THRESHOLD}
+      - RAG_EMBEDDING_MODEL=${RAG_EMBEDDING_MODEL}
+      # Processing Configuration
+      - BATCH_SIZE=${BATCH_SIZE}
+      - MAX_RETRIES=${MAX_RETRIES}
+      - RETRY_DELAY=${RETRY_DELAY}
+      # Cost Optimization
+      - COST_THRESHOLD_DAILY=${COST_THRESHOLD_DAILY}
+      - ENABLE_COST_TRACKING=${ENABLE_COST_TRACKING}
+      # Alerting Configuration
+      - WEBHOOK_URL=${WEBHOOK_URL}
+      - ALERT_SEVERITY_THRESHOLD=${ALERT_SEVERITY_THRESHOLD}
+      # Scheduling
+      - CRON_SCHEDULE=${CRON_SCHEDULE}
+      - TIMEZONE=${TIMEZONE}
+      # Disable ChromaDB telemetry
+      - ANONYMIZED_TELEMETRY=${ANONYMIZED_TELEMETRY}
+      - CHROMA_TELEMETRY=False
+    volumes:
+      - ./data:/app/data
+      - ./reports:/app/reports
+      - ./logs:/app/logs
+      - ./src:/app/src
+      - ./scripts:/app/scripts
+    restart: unless-stopped
+    networks:
+      - error-monitor-network
+
+  # Web Dashboard
+  web-dashboard:
+    image: nginx:alpine
+    container_name: error-monitor-web
+    ports:
+      - "8080:80"
+    volumes:
+      - ./web:/usr/share/nginx/html
+      - ./reports:/usr/share/nginx/html/reports
+      - ./web/nginx.conf:/etc/nginx/conf.d/default.conf
+    restart: unless-stopped
+    networks:
+      - error-monitor-network
+
+networks:
+  error-monitor-network:
+    driver: bridge

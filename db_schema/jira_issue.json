@@ -1,0 +1,136 @@
+{
+  "properties": {
+    "count": {
+      "type": "long"
+    },
+    "error_message": {
+      "fields": {
+        "keyword": {
+          "type": "keyword",
+          "ignore_above": 256
+        }
+      },
+      "type": "text"
+    },
+    "error_type": {
+      "fields": {
+        "keyword": {
+          "type": "keyword",
+          "ignore_above": 256
+        }
+      },
+      "type": "text"
+    },
+    "full_log_url": {
+      "fields": {
+        "keyword": {
+          "type": "keyword",
+          "ignore_above": 256
+        }
+      },
+      "type": "text"
+    },
+    "issue_key": {
+      "fields": {
+        "keyword": {
+          "type": "keyword",
+          "ignore_above": 256
+        }
+      },
+      "type": "text"
+    },
+    "issue_time": {
+      "type": "date"
+    },
+    "jira_summary": {
+      "fields": {
+        "keyword": {
+          "type": "keyword",
+          "ignore_above": 256
+        }
+      },
+      "type": "text"
+    },
+    "jira_url": {
+      "fields": {
+        "keyword": {
+          "type": "keyword",
+          "ignore_above": 256
+        }
+      },
+      "type": "text"
+    },
+    "log_group": {
+      "fields": {
+        "keyword": {
+          "type": "keyword",
+          "ignore_above": 256
+        }
+      },
+      "type": "text"
+    },
+    "modified_error_message": {
+      "fields": {
+        "keyword": {
+          "type": "keyword",
+          "ignore_above": 256
+        }
+      },
+      "type": "text"
+    },
+    "modified_error_message_hash": {
+      "type": "long"
+    },
+    "modified_traceback": {
+      "fields": {
+        "keyword": {
+          "type": "keyword",
+          "ignore_above": 256
+        }
+      },
+      "type": "text"
+    },
+    "related_issue_keys": {
+      "fields": {
+        "keyword": {
+          "type": "keyword",
+          "ignore_above": 256
+        }
+      },
+      "type": "text"
+    },
+    "related_traceback_hashes": {
+      "type": "long"
+    },
+    "request_id": {
+      "fields": {
+        "keyword": {
+          "type": "keyword",
+          "ignore_above": 256
+        }
+      },
+      "type": "text"
+    },
+    "site": {
+      "fields": {
+        "keyword": {
+          "type": "keyword",
+          "ignore_above": 256
+        }
+      },
+      "type": "text"
+    },
+    "traceback": {
+      "fields": {
+        "keyword": {
+          "type": "keyword",
+          "ignore_above": 256
+        }
+      },
+      "type": "text"
+    },
+    "traceback_hash": {
+      "type": "long"
+    }
+  }
+}
