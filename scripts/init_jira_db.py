@@ -588,17 +588,17 @@ def main():
     args = parser.parse_args()
     sites = ["stage", "prod"]
     skip_error_logs_count = {"stage": 0, "prod": 0}
-    max_process_error_logs = {"stage": 1000000, "prod": 1000000}
+    max_process_error_logs = {"stage": 1000000, "prod": 30000}
 
     try:
         initialize_database(
             dry_run=args.dry_run,
             sites=sites,
-            months=48,
+            months=1,
             project_key=args.project_key,
             page_size=args.page_size,
-            skip_jira=False,
-            skip_error_logs=True,
+            skip_jira=True,
+            skip_error_logs=False,
             skip_error_logs_count=skip_error_logs_count,
             max_process_error_logs=max_process_error_logs,
         )
