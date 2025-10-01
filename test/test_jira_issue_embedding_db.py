@@ -21,12 +21,11 @@ class TestJiraIssueEmbeddingDB:
         """Create mock system configuration."""
         config = Mock(spec=SystemConfig)
         config.jira_embedding = JiraEmbeddingConfig(
-            index_name_template="test_jira_issue_embedding_{year}",
+            index_name_template="test_jira_issue_embedding",
             similarity_threshold=0.85,
             top_k=10,
             batch_size=100,
             retention_years=3,
-            auto_create_year_index=True,
         )
         return config
 
@@ -86,16 +85,9 @@ class TestJiraIssueEmbeddingDB:
         )
 
     def test_get_current_index_name(self, jira_embedding_db):
-        """Test getting current year's index name."""
-        current_year = datetime.now().year
-        expected = f"test_jira_issue_embedding_{current_year}"
-        assert jira_embedding_db.get_current_index_name() == expected
 
-    def test_get_index_name_for_year(self, jira_embedding_db):
-        """Test getting index name for specific year."""
-        year = 2023
-        expected = f"test_jira_issue_embedding_{year}"
-        assert jira_embedding_db.get_index_name_for_year(year) == expected
+        expected = f"test_jira_issue_embedding"
+        assert jira_embedding_db.get_current_index_name() == expected
 
     def test_normalize_embedding(self, jira_embedding_db, mock_embedding_service):
         """Test embedding normalization to unit vector."""
@@ -371,105 +363,7 @@ class TestJiraIssueEmbeddingDB:
         assert result[0]["score"] == 0.9
         mock_embedding_service.generate_embedding.assert_called_once()
         mock_opensearch_client.client.search.assert_called_once()
-
-    def test_get_available_years(self, jira_embedding_db, mock_opensearch_client):
-        """Test getting available years."""
-        # Mock cat indices response
-        mock_response = [
-            {"index": "test_jira_issue_embedding_2023"},
-            {"index": "test_jira_issue_embedding_2024"},
-            {"index": "other_index_2024"},
-        ]
-        mock_opensearch_client.client.cat.indices.return_value = mock_response
-
-        result = jira_embedding_db.get_available_years()
-
-        assert 2023 in result
-        assert 2024 in result
-        assert len(result) == 2
-
-    def test_search_across_years(self, jira_embedding_db, mock_opensearch_client, mock_embedding_service):
-        """Test searching across multiple years."""
-        # Mock search responses for different years
-        mock_response_2023 = {
-            "hits": {
-                "hits": [
-                    {
-                        "_score": 0.9,
-                        "_source": {
-                            "key": "TEST-2023",
-                            "summary": "Test 2023",
-                            "status": "Open",
-                            "site": "test",
-                            "is_parent": True,
-                        },
-                    }
-                ]
-            }
-        }
-        mock_response_2024 = {
-            "hits": {
-                "hits": [
-                    {
-                        "_score": 0.8,
-                        "_source": {
-                            "key": "TEST-2024",
-                            "summary": "Test 2024",
-                            "status": "Open",
-                            "site": "test",
-                            "is_parent": True,
-                        },
-                    }
-                ]
-            }
-        }
-
-        def mock_search(index, body):
-            if "2023" in index:
-                return mock_response_2023
-            elif "2024" in index:
-                return mock_response_2024
-            return {"hits": {"hits": []}}
-
-        mock_opensearch_client.client.search.side_effect = mock_search
-        mock_embedding_service.generate_embedding.return_value = [0.1] * 1536
-
-        # Mock get_available_years
-        with patch.object(jira_embedding_db, 'get_available_years', return_value=[2023, 2024]):
-            result = jira_embedding_db.search_across_years("test query", years=[2023, 2024])
-
-        assert 2023 in result
-        assert 2024 in result
-        assert len(result[2023]) == 1
-        assert len(result[2024]) == 1
-        assert result[2023][0]["key"] == "TEST-2023"
-        assert result[2024][0]["key"] == "TEST-2024"
-
-    def test_migrate_old_issues(self, jira_embedding_db, mock_opensearch_client):
-        """Test migrating issues between years."""
-        # Mock scroll search response
-        mock_scroll_response = {
-            "_scroll_id": "scroll-123",
-            "hits": {
-                "hits": [{"_id": "TEST-123", "_source": {"key": "TEST-123", "summary": "Test Issue", "status": "Open"}}]
-            },
-        }
-        mock_empty_response = {"hits": {"hits": []}}
-
-        mock_opensearch_client.client.search.return_value = mock_scroll_response
-        mock_opensearch_client.client.scroll.side_effect = [mock_scroll_response, mock_empty_response]
-        mock_opensearch_client.client.bulk.return_value = {"items": [{"index": {"result": "created"}}]}
-        mock_opensearch_client.client.clear_scroll.return_value = {"succeeded": True}
-        mock_opensearch_client.client.indices.exists.return_value = False
-
-        # Mock create_index
-        with patch.object(jira_embedding_db, 'create_index', return_value={"acknowledged": True}):
-            result = jira_embedding_db.migrate_old_issues(2023, 2024)
-
-        assert result["from_year"] == 2023
-        assert result["to_year"] == 2024
-        assert result["total_migrated"] == 1
-        assert result["status"] == "success"
+    
 
     def test_error_handling_in_add_jira_issue(self, jira_embedding_db, sample_jira_issue_data, mock_embedding_service):
         """Test error handling in add_jira_issue method."""

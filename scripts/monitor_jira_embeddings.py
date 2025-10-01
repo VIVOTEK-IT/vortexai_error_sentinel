@@ -74,24 +74,6 @@ class JiraEmbeddingMonitor:
             logger.error(f"Failed to get error monitoring: {e}")
             return {"timestamp": datetime.now(timezone.utc).isoformat(), "error": str(e)}
 
-    def get_available_years(self) -> List[int]:
-        """Get list of available years with data."""
-        try:
-            years = self.jira_embedding_db.get_available_years()
-            return years
-        except Exception as e:
-            logger.error(f"Failed to get available years: {e}")
-            return []
-
-    def get_year_stats(self, year: int) -> Dict[str, Any]:
-        """Get statistics for a specific year."""
-        try:
-            stats = self.jira_embedding_db.get_embedding_stats(year)
-            return stats
-        except Exception as e:
-            logger.error(f"Failed to get stats for year {year}: {e}")
-            return {"error": str(e)}
-
     def monitor_continuously(self, interval: int = 60, duration: int = None):
         """
         Monitor the database continuously.
@@ -170,18 +152,11 @@ class JiraEmbeddingMonitor:
             "database_info": {
                 "index_template": self.jira_embedding_db.index_name_template,
                 "current_index": self.jira_embedding_db.get_current_index_name(),
-                "available_years": self.get_available_years(),
             },
             "health_status": self.get_health_status(),
             "performance_metrics": self.get_performance_metrics(),
-            "error_monitoring": self.get_error_monitoring(),
-            "year_statistics": {},
+            "error_monitoring": self.get_error_monitoring(),            
         }
-
-        # Get stats for each available year
-        for year in report["database_info"]["available_years"]:
-            year_stats = self.get_year_stats(year)
-            report["year_statistics"][str(year)] = year_stats
 
         # Save to file if specified
         if output_file:
@@ -350,10 +325,7 @@ def main():
                 "embedding_latency_ms": args.embedding_latency_threshold,
             }
             result = monitor.check_alerts(thresholds)
-        elif args.command == "years":
-            years = monitor.get_available_years()
-            print(f"Available years: {years}")
-            return
+      
         elif args.command == "stats":
             result = monitor.get_year_stats(args.year)
         else:

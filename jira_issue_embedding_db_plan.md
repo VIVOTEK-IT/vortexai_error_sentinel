@@ -10,10 +10,8 @@
 
 ### Primary Goals
 - **Vector Similarity Search**: Enable efficient similarity search between Jira issues and error logs using OpenAI embeddings
-- **Year-Based Organization**: Organize data by year for better performance and management
 - **Occurrence Tracking**: Track which error logs reference specific Jira issues
 - **Parent-Child Relationships**: Support hierarchical issue structures
-- **Cross-Year Analysis**: Enable searches across multiple years of data
 
 ### Success Criteria
 - **Correlation Rate**: >60% of error logs successfully correlated to Jira issues
@@ -50,8 +48,7 @@ Error Logs → Embedding Calculation → Similarity Search → Correlation
       similarity_threshold: float = 0.85
       top_k: int = 10
       batch_size: int = 100
-      retention_years: int = 3
-      auto_create_year_index: bool = True
+      retention_years: int = 3      
   ```
 
 - [ ] **Update SystemConfig**
@@ -152,26 +149,6 @@ Error Logs → Embedding Calculation → Similarity Search → Correlation
 
 ### Phase 4: Advanced Features (Week 4)
 **Priority**: Medium | **Duration**: 3-4 days
-
-#### 4.1 Year Management
-- [ ] **Year-based operations**
-  - `get_available_years()`: List available years with data
-  - `get_year_stats(year)`: Get statistics for specific year
-  - `archive_year(year)`: Archive old year data
-  - `delete_year(year)`: Remove year data
-
-#### 4.2 Cross-Year Operations
-- [ ] **Multi-year search capabilities**
-  - `search_across_years(query_text, years=None, top_k=10, similarity_threshold=0.85)`
-  - `get_cross_year_stats(years)`: Statistics across years
-  - `find_duplicate_issues_across_years()`: Find duplicate issues
-
-#### 4.3 Data Migration
-- [ ] **Migration utilities**
-  - `migrate_old_issues(from_year, to_year)`
-  - `bulk_migrate_issues(migration_batch)`
-  - `validate_migration(from_year, to_year)`
-  - `rollback_migration(migration_id)`
 
 ### Phase 5: Integration & Testing (Week 5)
 **Priority**: High | **Duration**: 3-4 days

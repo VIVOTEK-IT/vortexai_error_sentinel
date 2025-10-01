@@ -79,12 +79,35 @@ class JiraConfig:
 class JiraEmbeddingConfig:
     """Jira Issue Embedding Database configuration."""
 
-    index_name_template: str = "jira_issue_embedding_{year}"
+    index_name_template: str = "jira_issue_embedding"
     similarity_threshold: float = 0.85
     top_k: int = 10
     batch_size: int = 100
     retention_years: int = 3
-    auto_create_year_index: bool = True
+
+
+@dataclass
+class JiraCustomFieldConfig:
+    """Jira Custom Fields configuration."""
+
+    enabled: bool = True
+    cache_ttl: int = 3600  # seconds
+    auto_update: bool = True
+    fallback_mode: bool = True
+    known_fields: List[str] = None
+
+    def __post_init__(self):
+        if self.known_fields is None:
+            self.known_fields = [
+                "error_message",
+                "error_type",
+                "request_id",
+                "log_group",
+                "site",
+                "count",
+                "traceback",
+                "parent_issue",
+            ]
 
 
 @dataclass
@@ -119,6 +142,9 @@ class SystemConfig:
 
     # Jira Embedding Configuration
     jira_embedding: JiraEmbeddingConfig
+
+    # Jira Custom Fields Configuration
+    jira_custom_fields: JiraCustomFieldConfig
 
     # Vector Database Configuration
     vector_db: VectorDBConfig
@@ -202,12 +228,19 @@ def load_config() -> SystemConfig:
 
     # Jira embedding configuration
     jira_embedding_config = JiraEmbeddingConfig(
-        index_name_template=os.getenv("JIRA_EMBEDDING_INDEX_TEMPLATE", "jira_issue_embedding_{year}"),
+        index_name_template=os.getenv("JIRA_EMBEDDING_INDEX_TEMPLATE", "jira_issue_embedding"),
         similarity_threshold=float(os.getenv("JIRA_EMBEDDING_SIMILARITY_THRESHOLD", "0.85")),
         top_k=int(os.getenv("JIRA_EMBEDDING_TOP_K", "10")),
         batch_size=int(os.getenv("JIRA_EMBEDDING_BATCH_SIZE", "100")),
         retention_years=int(os.getenv("JIRA_EMBEDDING_RETENTION_YEARS", "3")),
-        auto_create_year_index=os.getenv("JIRA_EMBEDDING_AUTO_CREATE_INDEX", "true").lower() == "true",
+    )
+
+    # Jira custom fields configuration
+    jira_custom_fields_config = JiraCustomFieldConfig(
+        enabled=os.getenv("JIRA_CUSTOM_FIELDS_ENABLED", "true").lower() == "true",
+        cache_ttl=int(os.getenv("JIRA_CUSTOM_FIELDS_CACHE_TTL", "3600")),
+        auto_update=os.getenv("JIRA_CUSTOM_FIELDS_AUTO_UPDATE", "true").lower() == "true",
+        fallback_mode=os.getenv("JIRA_CUSTOM_FIELDS_FALLBACK_MODE", "true").lower() == "true",
     )
 
     # Vector database configuration
@@ -226,6 +259,7 @@ def load_config() -> SystemConfig:
         rds=rds_config,
         jira=jira_config,
         jira_embedding=jira_embedding_config,
+        jira_custom_fields=jira_custom_fields_config,
         vector_db=vector_db_config,
         batch_size=int(os.getenv("BATCH_SIZE", "10")),
         max_retries=int(os.getenv("MAX_RETRIES", "3")),

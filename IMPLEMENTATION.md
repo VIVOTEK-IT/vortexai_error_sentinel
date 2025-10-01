@@ -617,11 +617,9 @@ docker stats error-monitor-app
 The `JiraIssueEmbeddingDB` class provides a year-based vector database for Jira issues with embedding similarity search and error log correlation. It enables efficient similarity search between Jira issues and error logs using OpenAI embeddings with unit vector normalization for optimal OpenSearch performance.
 
 ### Key Features
-- **Year-Based Indexing**: Organizes data by year for better performance and management
 - **Unit Vector Normalization**: All embeddings are normalized to unit vectors for cosine similarity via OpenSearch inner product
 - **Occurrence Tracking**: Tracks which error logs reference specific Jira issues
 - **Parent-Child Relationships**: Supports hierarchical issue structures with parent-only search
-- **Cross-Year Operations**: Enables searches across multiple years of data
 - **OpenSearch Integration**: Uses kNN search with inner product similarity for optimal performance
 - **Health Monitoring**: Comprehensive health checks and performance metrics
 
@@ -668,10 +666,7 @@ class JiraIssueEmbeddingDB:
     def get_occurrences(self, jira_key: str, year: Optional[int] = None) -> List[OccurrenceData]
     def delete_issue(self, jira_key: str, year: Optional[int] = None) -> Dict[str, Any]
     def search_similar_issues(self, query_text: str, top_k: int = 10, similarity_threshold: float = 0.85) -> List[Dict[str, Any]]
-    def get_embedding_stats(self, year: Optional[int] = None) -> Dict[str, Any]
-    def search_across_years(self, query_text: str, years: Optional[List[int]] = None, top_k: int = 10, similarity_threshold: float = 0.85) -> Dict[int, List[Dict[str, Any]]]
-    def get_available_years(self) -> List[int]
-    def migrate_old_issues(self, from_year: int, to_year: int) -> Dict[str, Any]
+    def get_embedding_stats(self, year: Optional[int] = None) -> Dict[str, Any]    
     def normalize_embedding(self, embedding_vector: List[float]) -> List[float]
     def validate_unit_vector(self, embedding_vector: List[float], tolerance: float = 1e-6) -> bool
     def health_check(self) -> Dict[str, Any]
@@ -691,7 +686,6 @@ class JiraEmbeddingConfig:
     top_k: int = 10
     batch_size: int = 100
     retention_years: int = 3
-    auto_create_year_index: bool = True
 ```
 
 #### Environment Variables
@@ -769,17 +763,7 @@ The `WeeklyReportGenerator` integrates with `JiraIssueEmbeddingDB` to find corre
 - **Embedding Calculation**: Calculates embeddings for merged issues using `rag_engine._calculate_error_log_embeddings`
 - **Fallback Support**: Falls back to original correlation method if embedding database fails
 
-### Migration and Monitoring Utilities
-
-#### Migration Script (`scripts/migrate_jira_embeddings.py`)
-- **Purpose**: Data migration between year-based indices
-- **Commands**:
-  - `migrate`: Migrate data between years
-  - `archive`: Archive a year's data
-  - `delete`: Delete a year's data
-  - `list`: List available years
-  - `stats`: Get statistics for a year
-  - `cleanup`: Clean up old occurrences
+### Monitoring Utilities
 
 #### Monitoring Script (`scripts/monitor_jira_embeddings.py`)
 - **Purpose**: Real-time monitoring and health checks

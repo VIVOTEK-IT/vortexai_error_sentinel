@@ -55,12 +55,6 @@ Script for migrating Jira issue embeddings between year-based indices.
 
 **Usage:**
 ```bash
-# List available years
-python scripts/migrate_jira_embeddings.py list
-
-# Migrate issues from one year to another
-python scripts/migrate_jira_embeddings.py migrate --from-year 2023 --to-year 2024
-
 # Show help
 python scripts/migrate_jira_embeddings.py --help
 ```

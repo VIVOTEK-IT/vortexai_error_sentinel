@@ -2,15 +2,16 @@
 Jira Issue Embedding Database module for vector similarity search and correlation.
 """
 
+import json
 import logging
 from datetime import datetime, timezone
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 from dataclasses import dataclass
 
 from opensearchpy.client import OpenSearch
 
 from error_log_monitor.config import SystemConfig, JiraEmbeddingConfig
-from error_log_monitor.opensearch_client import OpenSearchClient, ErrorLog, connect_opensearch
+from error_log_monitor.opensearch_client import ErrorLog, connect_opensearch
 from error_log_monitor.embedding_service import EmbeddingService
 
 logger = logging.getLogger(__name__)
@@ -24,15 +25,19 @@ class JiraIssueData:
     summary: str
     description: str
     status: str
-    error_message: str
-    error_type: str
-    traceback: str
-    site: str
-    request_id: str
     created: str
     updated: str
-    parent_issue_key: str
-    is_parent: bool
+    error_message: Optional[str] = None
+    error_type: Optional[str] = None
+    traceback: Optional[str] = None
+    site: Optional[str] = None
+    request_id: Optional[str] = None
+    log_group: Optional[str] = None
+    count: Optional[int] = None
+    parent_issue: Optional[str] = None
+    parent_issue_key: Optional[str] = None
+    is_parent: bool = False
+    not_commit_to_jira: bool = False
 
 
 @dataclass
@@ -67,19 +72,19 @@ class JiraIssueEmbeddingDB:
 
         self.config = config
         self.jira_embedding_config: JiraEmbeddingConfig = config.jira_embedding
+        self.jira_custom_fields_config = config.jira_custom_fields
         self.index_name_template = index_name_template or self.jira_embedding_config.index_name_template
         self.logger = logging.getLogger(__name__)
         if not opensearch_connect:
             self.opensearch_connect = connect_opensearch(self.config.opensearch)
 
-    def get_current_index_name(self) -> str:
-        """Get the current year's index name."""
-        current_year = datetime.now().year
-        return self.index_name_template.format(year=current_year)
+        # Custom field mapping cache
+        self._custom_field_mapping: Dict[str, str] = {}
+        self._reverse_custom_field_mapping: Dict[str, str] = {}
+        self._field_mapping_cache_time: Optional[datetime] = None
 
-    def get_index_name_for_year(self, year: int) -> str:
-        """Get index name for a specific year."""
-        return self.index_name_template.format(year=year)
+    def get_current_index_name(self) -> str:
+        return self.index_name_template
 
     def normalize_embedding(self, embedding_vector: List[float]) -> List[float]:
         """
@@ -116,20 +121,160 @@ class JiraIssueEmbeddingDB:
             raise RuntimeError("Embedding service not available for validation")
         return self.embedding_service.validate_unit_vector(embedding_vector, tolerance)
 
-    def create_index(self, year: Optional[int] = None) -> Dict[str, Any]:
+    def _is_field_mapping_cache_valid(self) -> bool:
+        """Check if custom field mapping cache is still valid."""
+        if not self._field_mapping_cache_time:
+            return False
+
+        cache_age = (datetime.now(timezone.utc) - self._field_mapping_cache_time).total_seconds()
+        return cache_age < self.jira_custom_fields_config.cache_ttl
+
+    def _update_custom_field_mapping(self) -> None:
+        """Update custom field mapping from Jira Cloud."""
+        try:
+            from error_log_monitor.jira_cloud_client import get_jira_field_index
+
+            field_id_index, reverse_field_id_index = get_jira_field_index()
+
+            # Filter only known fields
+            known_fields = self.jira_custom_fields_config.known_fields
+            self._custom_field_mapping = {
+                field_name: field_id for field_name, field_id in field_id_index.items() if field_name in known_fields
+            }
+            self._reverse_custom_field_mapping = {
+                field_id: field_name for field_name, field_id in self._custom_field_mapping.items()
+            }
+
+            self._field_mapping_cache_time = datetime.now(timezone.utc)
+            self.logger.info(f"Updated custom field mapping: {self._custom_field_mapping}")
+
+        except Exception as e:
+            self.logger.error(f"Failed to update custom field mapping: {e}")
+            if not self.jira_custom_fields_config.fallback_mode:
+                raise
+
+    def get_custom_field_mapping(self) -> Dict[str, str]:
+        """Get current custom field mapping (field_name -> field_id)."""
+        if not self._is_field_mapping_cache_valid():
+            self._update_custom_field_mapping()
+        return self._custom_field_mapping.copy()
+
+    def get_reverse_custom_field_mapping(self) -> Dict[str, str]:
+        """Get reverse custom field mapping (field_id -> field_name)."""
+        if not self._is_field_mapping_cache_valid():
+            self._update_custom_field_mapping()
+        return self._reverse_custom_field_mapping.copy()
+
+    def map_custom_fields_from_jira_issue(self, jira_issue_raw: Dict[str, Any]) -> Dict[str, Any]:
+        """Map custom fields from Jira issue raw data to human-readable names."""
+        if not self.jira_custom_fields_config.enabled:
+            return {}
+
+        field_mapping = self.get_custom_field_mapping()
+        mapped_fields = {}
+
+        for field_name, field_id in field_mapping.items():
+            if field_id in jira_issue_raw.get('fields', {}):
+                field_value = jira_issue_raw['fields'][field_id]
+                # Handle different field value types
+                if isinstance(field_value, dict):
+                    # Handle complex field types (e.g., user, select, etc.)
+                    if 'value' in field_value:
+                        mapped_fields[field_name] = field_value['value']
+                    elif 'name' in field_value:
+                        mapped_fields[field_name] = field_value['name']
+                    elif 'key' in field_value:
+                        mapped_fields[field_name] = field_value['key']
+                    else:
+                        mapped_fields[field_name] = str(field_value)
+                else:
+                    mapped_fields[field_name] = field_value
+
+        return mapped_fields
+
+    def _generate_embedding_from_data(
+        self, data: Union[JiraIssueData, ErrorLog], reduce_length: Optional[bool] = False
+    ) -> Optional[List[float]]:
         """
-        Create the OpenSearch index with proper mapping for the specified year.
+        Generate embedding from JiraIssueData or ErrorLog object.
 
         Args:
-            year: Year for index creation, None for current year
+            data: Either JiraIssueData or ErrorLog object
+
+        Returns:
+            Normalized embedding vector or None if generation fails
+        """
+        try:
+            # Extract text content based on data type
+            if isinstance(data, JiraIssueData) or isinstance(data, ErrorLog):
+                text_input = f"{data.error_message or ''} {data.error_type or ''} {data.traceback or ''}"
+                if reduce_length:
+                    text_input = f"{data.error_message[:45] or ''} {data.error_type or ''} {data.traceback[:200] or ''}"
+            else:
+                return None
+
+            # Check if text input is empty or only whitespace
+            if not text_input or not text_input.strip():
+                return None
+
+            # Generate embedding using embedding service (automatically normalized)
+            if self.embedding_service is None:
+                return None
+
+            embedding = self.embedding_service.generate_embedding(text_input)
+
+            # Validate unit vector (should always be true since EmbeddingService normalizes automatically)
+            if not self.validate_unit_vector(embedding):
+                # Re-normalize as fallback
+                embedding = self.normalize_embedding(embedding)
+
+            return embedding
+
+        except Exception:
+            return None
+
+    def _generate_embedding_from_text(self, text: str) -> Optional[List[float]]:
+        """
+        Generate embedding from raw text.
+
+        Args:
+            text: Raw text to generate embedding from
+
+        Returns:
+            Normalized embedding vector or None if generation fails
+        """
+        try:
+            # Check if text input is empty or only whitespace
+            if not text or not text.strip():
+                return None
+
+            # Generate embedding using embedding service (automatically normalized)
+            if self.embedding_service is None:
+                return None
+
+            embedding = self.embedding_service.generate_embedding(text)
+
+            # Validate unit vector (should always be true since EmbeddingService normalizes automatically)
+            if not self.validate_unit_vector(embedding):
+                # Re-normalize as fallback
+                embedding = self.normalize_embedding(embedding)
+
+            return embedding
+
+        except Exception:
+            return None
+
+    def create_index(self) -> Dict[str, Any]:
+        """
+        Create the OpenSearch index with proper mapping.
+
+        Args:
+            None
 
         Returns:
             OpenSearch response
         """
-        if year is None:
-            index_name = self.get_current_index_name()
-        else:
-            index_name = self.get_index_name_for_year(year)
+        index_name = self.get_current_index_name()
 
         # Check if index already exists
         if self.opensearch_connect.indices.exists(index=index_name):
@@ -166,10 +311,14 @@ class JiraIssueEmbeddingDB:
                     "traceback": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
                     "site": {"type": "keyword"},
                     "request_id": {"type": "keyword"},
+                    "log_group": {"type": "keyword"},
+                    "count": {"type": "integer"},
+                    "parent_issue": {"type": "keyword"},
                     "created": {"type": "date", "format": "strict_date_optional_time||epoch_millis"},
                     "updated": {"type": "date", "format": "strict_date_optional_time||epoch_millis"},
                     "parent_issue_key": {"type": "keyword"},
                     "is_parent": {"type": "boolean"},
+                    "not_commit_to_jira": {"type": "boolean"},
                     "created_at": {"type": "date", "format": "strict_date_optional_time||epoch_millis"},
                     "updated_at": {"type": "date", "format": "strict_date_optional_time||epoch_millis"},
                 }
@@ -192,6 +341,40 @@ class JiraIssueEmbeddingDB:
             self.logger.error(f"Failed to create index {index_name}: {e}")
             raise
 
+    def find_jira_issue_by_key(self, jira_key: str) -> Optional[Dict[str, Any]]:
+
+        try:
+
+            # Search using jira key
+            search_body = {
+                "size": 50,
+                "query": {"term": {"key": jira_key}},
+                "_source": [
+                    "key",
+                    "status",
+                    "parent_issue_key",
+                    "is_parent",
+                ],
+            }
+            logger.info(f"Searching for Jira issue with key: {jira_key}")
+            search_body_str = json.dumps(search_body)
+            response = self.opensearch_connect.search(index=self.get_current_index_name(), body=search_body)
+            for hit in response["hits"]["hits"]:
+                source = hit["_source"]
+                logger.info(f"Jira issue found: {source['key']}, score: {hit['_score']}")
+
+                return {
+                    "key": source["key"],
+                    "status": source.get("status", ""),
+                    "parent_issue_key": source.get("parent_issue_key", ""),
+                    "is_parent": source.get("is_parent", True),
+                }
+            return None
+
+        except Exception as e:
+            self.logger.error(f"Failed to find similar Jira issue: {e}")
+            return None
+
     def add_jira_issue(
         self, jira_issue_data: JiraIssueData, error_log_data: Optional[ErrorLog] = None
     ) -> Dict[str, Any]:
@@ -206,34 +389,62 @@ class JiraIssueEmbeddingDB:
             OpenSearch response
         """
         try:
+            # Check if issue already exists by exact key match
+            try:
+                if jira_issue_data.key:
+                    existing_doc = self.opensearch_connect.get(
+                        index=self.get_current_index_name(), id=jira_issue_data.key
+                    )
+                    if not existing_doc:
+                        find_by_key = self.find_jira_issue_by_key(jira_issue_data.key)
+                        if find_by_key:
+                            existing_doc = True
+                    if existing_doc and existing_doc.get("found", False):
+                        self.logger.info(f"Jira issue {jira_issue_data.key} already exists in database, skipping")
+                        return {"result": "skipped", "reason": "already_exists", "id": jira_issue_data.key}
+            except Exception:
+                # Document doesn't exist, continue with adding
+                pass
+
             # Calculate embedding
             if error_log_data:
                 # Use error log data for embedding
-                text_input = (
-                    f"{error_log_data.error_message or ''} "
-                    f"{error_log_data.error_type or ''} "
-                    f"{error_log_data.traceback or ''}"
-                )
+                embedding = self._generate_embedding_from_data(error_log_data)
             else:
                 # Use Jira issue data for embedding
-                text_input = f"{jira_issue_data.summary} {jira_issue_data.description} {jira_issue_data.error_message}"
+                embedding = self._generate_embedding_from_data(jira_issue_data)
 
-            # Check if text input is empty or only whitespace
-            if not text_input or not text_input.strip():
-                error_msg = f"Cannot generate embedding for empty text input for Jira issue {jira_issue_data.key}"
+            if embedding is None:
+                error_msg = f"Cannot generate embedding for Jira issue {jira_issue_data.key}"
                 self.logger.error(error_msg)
                 raise ValueError(error_msg)
+            # Check if key is already in the database
+            if jira_issue_data.key:
+                try:
+                    result = self.find_jira_issue_by_key(jira_issue_data.key)
+                    if result:
+                        self.logger.info(f"Jira issue {jira_issue_data.key} already exists in database, skipping")
+                        return {"result": "skipped", "reason": "already_exists", "id": jira_issue_data.key}
+                except Exception:
+                    # Document doesn't exist, continue with adding
+                    pass
+            else:
+                # Check for similar issues with 99% threshold
+                similar_issue = self.find_similar_jira_issue(
+                    error_log_embedding=embedding, site=jira_issue_data.site or "unknown", similarity_threshold=0.9999
+                )
 
-            # Generate embedding using embedding service (automatically normalized)
-            if self.embedding_service is None:
-                raise RuntimeError("Embedding service not available for generating embeddings")
-            embedding = self.embedding_service.generate_embedding(text_input)
-
-            # Validate unit vector (should always be true since EmbeddingService normalizes automatically)
-            if not self.validate_unit_vector(embedding):
-                self.logger.warning(f"Embedding for {jira_issue_data.key} is not a unit vector, this should not happen")
-                # Re-normalize as fallback
-                embedding = self.normalize_embedding(embedding)
+                if similar_issue:
+                    self.logger.info(
+                        f"Similar Jira issue found with 99%+ similarity: {similar_issue.get('key', 'unknown')}, "
+                        f"skipping {jira_issue_data.key}"
+                    )
+                    return {
+                        "result": "skipped",
+                        "reason": "similar_issue_found",
+                        "similar_issue_key": similar_issue.get("key"),
+                        "similarity_score": similar_issue.get("_score", 0),
+                    }
 
             # Prepare document
             doc = {
@@ -252,17 +463,16 @@ class JiraIssueEmbeddingDB:
                 "updated": jira_issue_data.updated,
                 "parent_issue_key": jira_issue_data.parent_issue_key,
                 "is_parent": jira_issue_data.is_parent,
+                "not_commit_to_jira": jira_issue_data.not_commit_to_jira,
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
             }
 
             # Index document
-            response = self.opensearch_connect.index(
-                index=self.get_current_index_name(), id=jira_issue_data.key, body=doc
-            )
-
+            response = self.opensearch_connect.index(index=self.get_current_index_name(), body=doc)
             self.logger.info(f"Added Jira issue {jira_issue_data.key} to embedding database")
-            return response
+
+            return {"result": "added", "id": jira_issue_data.key, "opensearch_response": response}
 
         except Exception as e:
             self.logger.error(f"Failed to add Jira issue {jira_issue_data.key}: {e}")
@@ -288,12 +498,15 @@ class JiraIssueEmbeddingDB:
                 self.logger.warning("Query embedding is not a unit vector, normalizing as fallback")
                 error_log_embedding = self.normalize_embedding(error_log_embedding)
 
-            # Search using kNN with site filter and parent issues only
+            # Search using knn with site filter and parent issues only
             search_body = {
-                "knn": {"field": "embedding", "query_vector": error_log_embedding, "k": 5, "num_candidates": 50},
+                "size": 10,
                 "query": {
-                    "bool": {
-                        "must": [{"term": {"site": site}}, {"term": {"is_parent": True}}]  # Only search parent issues
+                    "knn": {
+                        "embedding": {
+                            "vector": error_log_embedding,
+                            "k": 32,
+                        }
                     }
                 },
                 "_source": [
@@ -312,52 +525,61 @@ class JiraIssueEmbeddingDB:
                     "is_parent",
                     "occurrence_list",
                 ],
-                "min_score": similarity_threshold,
+                "min_score": 2 * similarity_threshold,
             }
-
+            # logger.info(f"Searching for similar Jira issue with body: {search_body}")
+            search_body_str = json.dumps(search_body)
             response = self.opensearch_connect.search(index=self.get_current_index_name(), body=search_body)
-
-            if response["hits"]["hits"]:
-                hit = response["hits"]["hits"][0]  # Get the most similar
+            for hit in response["hits"]["hits"]:
                 source = hit["_source"]
-                return {
-                    "key": source["key"],
-                    "score": hit["_score"],
-                    "summary": source.get("summary", ""),
-                    "description": source.get("description", ""),
-                    "status": source.get("status", ""),
-                    "error_message": source.get("error_message", ""),
-                    "error_type": source.get("error_type", ""),
-                    "traceback": source.get("traceback", ""),
-                    "site": source.get("site", ""),
-                    "request_id": source.get("request_id", ""),
-                    "created": source.get("created", ""),
-                    "updated": source.get("updated", ""),
-                    "parent_issue_key": source.get("parent_issue_key", ""),
-                    "is_parent": source.get("is_parent", True),
-                }
-
+                logger.info(f"Similar Jira issue found: {source['key']}, score: {hit['_score']}")
+                if source["site"] == site and source["is_parent"] == True:
+                    return {
+                        "doc_id": hit["_id"],
+                        "key": source["key"],
+                        "score": hit["_score"],
+                        "summary": source.get("summary", ""),
+                        "description": source.get("description", ""),
+                        "status": source.get("status", ""),
+                        "error_message": source.get("error_message", ""),
+                        "error_type": source.get("error_type", ""),
+                        "traceback": source.get("traceback", ""),
+                        "site": source.get("site", ""),
+                        "request_id": source.get("request_id", ""),
+                        "created": source.get("created", ""),
+                        "updated": source.get("updated", ""),
+                        "parent_issue_key": source.get("parent_issue_key", ""),
+                        "is_parent": source.get("is_parent", True),
+                    }
             return None
 
         except Exception as e:
             self.logger.error(f"Failed to find similar Jira issue: {e}")
             return None
 
-    def add_occurrence(self, jira_key: str, doc_id: str, timestamp: str, year: Optional[int] = None) -> Dict[str, Any]:
+    def add_occurrence(self, source_doc_id: str, doc_id: str, timestamp: str) -> Dict[str, Any]:
         """
         Add an occurrence reference to a Jira issue.
 
         Args:
-            jira_key: Jira issue key
+            source_doc_id: Jira issue key
             doc_id: Document ID from error log
             timestamp: Timestamp of occurrence
-            year: Year for index, None for current year
 
         Returns:
             OpenSearch response
         """
         try:
-            index_name = self.get_current_index_name() if year is None else self.get_index_name_for_year(year)
+            # TODO: check doc_id is not in source_doc_id's occurrence_list
+            source_doc = self.get_issue_by_key(source_doc_id)
+            if source_doc:
+                if doc_id in source_doc.get("_source", {}).get("occurrence_list", []):
+                    for occ in source_doc.get("_source", {}).get("occurrence_list", []):
+                        if occ["doc_id"] == doc_id:
+                            self.logger.info(f"Doc {doc_id} already in {source_doc_id}'s occurrence_list, skipping")
+                            return {"result": "skipped", "reason": "already_exists", "id": source_doc_id}
+
+            index_name = self.get_current_index_name()
 
             # Add occurrence to the nested occurrence_list
             script = {
@@ -371,28 +593,27 @@ class JiraIssueEmbeddingDB:
                 }
             }
 
-            response = self.opensearch_connect.update(index=index_name, id=jira_key, body=script)
+            response = self.opensearch_connect.update(index=index_name, id=source_doc_id, body=script)
 
-            self.logger.debug(f"Added occurrence {doc_id} to Jira issue {jira_key}")
+            self.logger.debug(f"Added occurrence {doc_id} to Jira issue {source_doc_id}")
             return response
 
         except Exception as e:
-            self.logger.error(f"Failed to add occurrence to {jira_key}: {e}")
+            self.logger.error(f"Failed to add occurrence to {source_doc_id}: {e}")
             raise
 
-    def get_issue_by_key(self, jira_key: str, year: Optional[int] = None) -> Optional[Dict[str, Any]]:
+    def get_issue_by_key(self, jira_key: str) -> Optional[Dict[str, Any]]:
         """
         Retrieve a specific Jira issue by its key.
 
         Args:
             jira_key: Jira issue key
-            year: Year for index, None for current year
 
         Returns:
             Jira issue data or None if not found
         """
         try:
-            index_name = self.get_current_index_name() if year is None else self.get_index_name_for_year(year)
+            index_name = self.get_current_index_name()
 
             response = self.opensearch_connect.get(index=index_name, id=jira_key)
 
@@ -405,19 +626,19 @@ class JiraIssueEmbeddingDB:
             self.logger.error(f"Failed to get Jira issue {jira_key}: {e}")
             return None
 
-    def get_occurrences(self, jira_key: str, year: Optional[int] = None) -> List[OccurrenceData]:
+    def get_occurrences(self, jira_key: str) -> List[OccurrenceData]:
         """
         Get all occurrences for a specific Jira issue.
 
         Args:
             jira_key: Jira issue key
-            year: Year for index, None for current year
+
 
         Returns:
             List of occurrence data
         """
         try:
-            issue_data = self.get_issue_by_key(jira_key, year)
+            issue_data = self.get_issue_by_key(jira_key)
             if not issue_data:
                 return []
 
@@ -428,19 +649,19 @@ class JiraIssueEmbeddingDB:
             self.logger.error(f"Failed to get occurrences for {jira_key}: {e}")
             return []
 
-    def delete_issue(self, jira_key: str, year: Optional[int] = None) -> Dict[str, Any]:
+    def delete_issue(self, jira_key: str) -> Dict[str, Any]:
         """
         Delete a Jira issue and all its occurrences.
 
         Args:
             jira_key: Jira issue key
-            year: Year for index, None for current year
+
 
         Returns:
             OpenSearch response
         """
         try:
-            index_name = self.get_current_index_name() if year is None else self.get_index_name_for_year(year)
+            index_name = self.get_current_index_name()
 
             response = self.opensearch_connect.delete(index=index_name, id=jira_key)
 
@@ -451,18 +672,18 @@ class JiraIssueEmbeddingDB:
             self.logger.error(f"Failed to delete Jira issue {jira_key}: {e}")
             raise
 
-    def get_embedding_stats(self, year: Optional[int] = None) -> Dict[str, Any]:
+    def get_embedding_stats(self) -> Dict[str, Any]:
         """
-        Get statistics about the embedding database for a specific year.
+        Get statistics about the embedding database
 
         Args:
-            year: Year for index, None for current year
+
 
         Returns:
             Database statistics
         """
         try:
-            index_name = self.get_current_index_name() if year is None else self.get_index_name_for_year(year)
+            index_name = self.get_current_index_name()
 
             # Get index stats
             stats = self.opensearch_connect.indices.stats(index=index_name)
@@ -493,7 +714,6 @@ class JiraIssueEmbeddingDB:
                 "total_documents": doc_count,
                 "index_size_bytes": stats["indices"][index_name]["total"]["store"]["size_in_bytes"],
                 "average_occurrences": avg_occurrences,
-                "year": year or datetime.now().year,
             }
 
         except Exception as e:
@@ -516,19 +736,25 @@ class JiraIssueEmbeddingDB:
         """
         try:
             # Generate embedding for query (automatically normalized)
-            if self.embedding_service is None:
-                raise RuntimeError("Embedding service not available for generating query embeddings")
-            query_embedding = self.embedding_service.generate_embedding(query_text)
+            query_embedding = self._generate_embedding_from_text(query_text)
 
-            # Search using kNN
+            if query_embedding is None:
+                self.logger.error("Cannot generate embedding for query text")
+                return []
+
+            # Search using knn with parent issues only
             search_body = {
-                "knn": {
-                    "field": "embedding",
-                    "query_vector": query_embedding,
-                    "k": top_k,
-                    "num_candidates": top_k * 10,
+                "size": top_k,
+                "query": {
+                    "knn": {
+                        "embedding": {
+                            "vector": query_embedding,
+                            "k": top_k,
+                            "num_candidates": top_k * 10,
+                            "filter": [{"term": {"is_parent": True}}],
+                        }
+                    }
                 },
-                "query": {"bool": {"must": [{"term": {"is_parent": True}}]}},  # Only search parent issues
                 "_source": [
                     "key",
                     "summary",
@@ -578,200 +804,112 @@ class JiraIssueEmbeddingDB:
             self.logger.error(f"Failed to search similar issues: {e}")
             return []
 
-    def get_available_years(self) -> List[int]:
+    def _update_jira(self, jira_issues: JiraIssueData) -> Dict[str, Any]:
+        # Process Jira issues
+        results = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "jira_issues_processed": 0,
+            "jira_issues_added": 0,
+            "jira_issues_skipped": 0,
+            "errors": [],
+        }
+        logger.info(f"Processing {len(jira_issues)} Jira issues")
+        for jira_issue_data in jira_issues:
+            try:
+                # Skip issues that are not committed to Jira
+                if jira_issue_data.not_commit_to_jira:
+                    self.logger.info(f"Skipping Jira issue {jira_issue_data.key} - not committed to Jira")
+                    continue
+
+                # Add Jira issue to database
+                result = self.add_jira_issue(jira_issue_data)
+                results["jira_issues_processed"] += 1
+
+                if result.get("result") == "added":
+                    results["jira_issues_added"] += 1
+                elif result.get("result") == "skipped":
+                    results["jira_issues_skipped"] += 1
+
+            except Exception as e:
+                error_msg = f"Failed to process Jira issue {jira_issue_data.key}: {e}"
+                logger.error(error_msg, exc_info=True)
+                results["errors"].append(error_msg)
+        return results
+
+    def _update_error_logs(
+        self, error_logs: List[Any], skip_error_logs_count: int = 0, max_process_error_logs: int = 1000000
+    ) -> Dict[str, Any]:
         """
-        Get list of available years with data.
-
-        Returns:
-            List of years that have indices with data
+        Update the error logs in the database.
         """
-        try:
-            # Get all indices matching the pattern
-            indices = self.opensearch_connect.cat.indices(
-                index=f"{self.index_name_template.replace('{year}', '*')}", format="json"
-            )
 
-            years = []
-            for index_info in indices:
-                index_name = index_info["index"]
-                if index_name.startswith("jira_issue_embedding_"):
-                    # Extract year from index name
-                    year_str = index_name.replace("jira_issue_embedding_", "")
-                    try:
-                        year = int(year_str)
-                        years.append(year)
-                    except ValueError:
-                        continue
+        initialization_results = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "status": "in_progress",
+            "error_logs_processed": skip_error_logs_count,
+            "similar_issues_found": 0,
+            "new_issues_created": 0,
+            "occurrences_added": 0,
+            "errors": [],
+            "stats": {},
+        }
 
-            return sorted(years)
+        total_error_logs = len(error_logs)
+        self.logger.info(f"Processing {total_error_logs} error logs")
 
-        except Exception as e:
-            self.logger.error(f"Failed to get available years: {e}")
-            return []
+        for error_log in error_logs:
 
-    def search_across_years(
-        self, query_text: str, years: Optional[List[int]] = None, top_k: int = 10, similarity_threshold: float = 0.85
-    ) -> Dict[int, List[Dict[str, Any]]]:
-        """
-        Search for similar Jira issues across multiple years.
+            try:
+                # Calculate embedding for error log
+                error_embedding = self._generate_embedding_from_data(error_log)
 
-        Args:
-            query_text: Text to search for
-            years: List of years to search, None for all available years
-            top_k: Number of results to return per year
-            similarity_threshold: Minimum similarity score
+                if error_embedding is None:
+                    self.logger.warning(f"Skipping error log {error_log.message_id} - cannot generate embedding")
+                    continue
 
-        Returns:
-            Results grouped by year
-        """
-        try:
-            if years is None:
-                years = self.get_available_years()
+                # Find similar Jira issues
+                similar_issue = self.find_similar_jira_issue(
+                    error_log_embedding=error_embedding, site=error_log.site, similarity_threshold=0.85
+                )
+                if not similar_issue:
+                    error_embedding = self._generate_embedding_from_data(error_log, reduce_length=True)
+                    similar_issue = self.find_similar_jira_issue(
+                        error_log_embedding=error_embedding, site=error_log.site, similarity_threshold=0.85
+                    )
 
-            # Generate embedding for query
-            if self.embedding_service is None:
-                raise RuntimeError("Embedding service not available for generating query embeddings")
-            raw_embedding = self.embedding_service.generate_embedding(query_text)
-            query_embedding = self.normalize_embedding(raw_embedding)
+                if similar_issue:
+                    # Add occurrence to existing issue
+                    self.add_occurrence(
+                        source_doc_id=similar_issue["doc_id"],
+                        doc_id=error_log.message_id,
+                        timestamp=error_log.timestamp,
+                    )
+                    initialization_results["similar_issues_found"] += 1
+                    initialization_results["occurrences_added"] += 1
 
-            all_results = {}
+                else:
+                    # Create new Jira issue from error log
+                    new_jira_data = self._create_jira_issue_from_error_log(error_log, error_log.site)
+                    if new_jira_data:
+                        self.add_jira_issue(new_jira_data)
+                        initialization_results["new_issues_created"] += 1
 
-            for year in years:
-                index_name = self.get_index_name_for_year(year)
+                initialization_results["error_logs_processed"] += 1
 
-                # Search in this year's index
-                search_body = {
-                    "knn": {
-                        "field": "embedding",
-                        "query_vector": query_embedding,
-                        "k": top_k,
-                        "num_candidates": top_k * 10,
-                    },
-                    "query": {"bool": {"must": [{"term": {"is_parent": True}}]}},  # Only search parent issues
-                    "_source": [
-                        "key",
-                        "summary",
-                        "description",
-                        "status",
-                        "error_message",
-                        "error_type",
-                        "traceback",
-                        "site",
-                        "request_id",
-                        "created",
-                        "updated",
-                        "parent_issue_key",
-                        "is_parent",
-                        "occurrence_list",
-                    ],
-                    "min_score": similarity_threshold,
-                }
+            except Exception as e:
+                error_msg = f"Failed to process error log {error_log.message_id} for site {error_log.site}: {e}"
+                self.logger.error(error_msg)
+                initialization_results["errors"].append(error_msg)
+                continue
 
-                try:
-                    response = self.opensearch_connect.search(index=index_name, body=search_body)
-
-                    results = []
-                    for hit in response["hits"]["hits"]:
-                        source = hit["_source"]
-                        results.append(
-                            {
-                                "key": source["key"],
-                                "score": hit["_score"],
-                                "year": year,
-                                "summary": source.get("summary", ""),
-                                "description": source.get("description", ""),
-                                "status": source.get("status", ""),
-                                "error_message": source.get("error_message", ""),
-                                "error_type": source.get("error_type", ""),
-                                "traceback": source.get("traceback", ""),
-                                "site": source.get("site", ""),
-                                "request_id": source.get("request_id", ""),
-                                "created": source.get("created", ""),
-                                "updated": source.get("updated", ""),
-                                "parent_issue_key": source.get("parent_issue_key", ""),
-                                "is_parent": source.get("is_parent", True),
-                            }
-                        )
-
-                    all_results[year] = results
-
-                except Exception as e:
-                    self.logger.warning(f"Failed to search in year {year}: {e}")
-                    all_results[year] = []
-
-            return all_results
-
-        except Exception as e:
-            self.logger.error(f"Failed to search across years: {e}")
-            return {}
-
-    def migrate_old_issues(self, from_year: int, to_year: int) -> Dict[str, Any]:
-        """
-        Migrate issues from one year to another.
-
-        Args:
-            from_year: Source year
-            to_year: Target year
-
-        Returns:
-            Migration results
-        """
-        try:
-            from_index = self.get_index_name_for_year(from_year)
-            to_index = self.get_index_name_for_year(to_year)
-
-            # Ensure target index exists
-            if not self.opensearch_connect.indices.exists(index=to_index):
-                self.create_index(to_year)
-
-            # Scroll through all documents in source index
-            search_body = {"query": {"match_all": {}}, "size": 1000}
-
-            response = self.opensearch_connect.search(index=from_index, body=search_body, scroll="5m")
-
-            scroll_id = response.get("_scroll_id")
-            total_migrated = 0
-
-            while response["hits"]["hits"]:
-                # Prepare bulk actions for migration
-                bulk_actions = []
-
-                for hit in response["hits"]["hits"]:
-                    doc = hit["_source"]
-                    doc_id = hit["_id"]
-
-                    # Update timestamps for migration
-                    doc["migrated_at"] = datetime.now(timezone.utc).isoformat()
-                    doc["original_year"] = from_year
-                    doc["updated_at"] = datetime.now(timezone.utc).isoformat()
-
-                    bulk_actions.append({"index": {"_index": to_index, "_id": doc_id}})
-                    bulk_actions.append(doc)
-
-                if bulk_actions:
-                    self.opensearch_connect.bulk(body=bulk_actions)
-                    total_migrated += len(bulk_actions) // 2
-
-                # Get next batch
-                response = self.opensearch_connect.scroll(scroll_id=scroll_id, scroll="5m")
-
-            # Clear scroll
-            self.opensearch_connect.clear_scroll(scroll_id=scroll_id)
-
-            return {"from_year": from_year, "to_year": to_year, "total_migrated": total_migrated, "status": "success"}
-
-        except Exception as e:
-            self.logger.error(f"Failed to migrate issues from {from_year} to {to_year}: {e}")
-            return {
-                "from_year": from_year,
-                "to_year": to_year,
-                "total_migrated": 0,
-                "status": "failed",
-                "error": str(e),
-            }
+        return initialization_results
 
     def initialize_database(
-        self, jira_issues: List[Dict[str, Any]], error_logs_by_site: Dict[str, List[Any]]
+        self,
+        jira_issues: List[JiraIssueData],
+        error_logs: List[Any],
+        skip_error_logs_count: int = 0,
+        max_process_error_logs: int = 1000000,
     ) -> Dict[str, Any]:
         """
         Initialize the Jira Issue Embedding Database with Jira issues and error logs.
@@ -780,15 +918,7 @@ class JiraIssueEmbeddingDB:
         processes error logs from the past 6 months, finds similar issues, and adds occurrences.
 
         Args:
-            jira_issues: List of Jira issues from API with fields:
-                - key: Jira issue key (e.g., "VEL-123")
-                - summary: Issue summary
-                - description: Issue description
-                - status: Issue status
-                - created: Creation timestamp
-                - updated: Last update timestamp
-                - site: Site name (stage/prod)
-                - parent_issue_key: Parent issue key (empty for parent issues)
+            jira_issues: List of JiraIssueData objects from API
             error_logs_by_site: Dictionary mapping site names to lists of ErrorLog objects
                 from the past 6 months
 
@@ -801,13 +931,20 @@ class JiraIssueEmbeddingDB:
         """
         if self.embedding_service is None:
             raise RuntimeError("Embedding service not available for database initialization")
+        # Ensure current index exists
+        current_index = self.get_current_index_name()
 
+        if not self.opensearch_connect.indices.exists(index=current_index):
+            self.logger.info("Creating index")
+            self.create_index()
         try:
             self.logger.info("Starting Jira Issue Embedding Database initialization")
             initialization_results = {
                 "timestamp": datetime.now(timezone.utc).isoformat(),
                 "status": "in_progress",
                 "jira_issues_processed": 0,
+                "jira_issues_added": 0,
+                "jira_issues_skipped": 0,
                 "error_logs_processed": 0,
                 "similar_issues_found": 0,
                 "new_issues_created": 0,
@@ -815,107 +952,12 @@ class JiraIssueEmbeddingDB:
                 "errors": [],
                 "site_stats": {},
             }
-
-            # Ensure current year index exists
-            current_index = self.get_current_index_name()
-
-            if not self.opensearch_connect.indices.exists(index=current_index):
-                self.logger.info(f"Creating index for current year: {current_index}")
-                self.create_index()
-
-            # Process Jira issues
-            self.logger.info(f"Processing {len(jira_issues)} Jira issues")
-            for jira_issue_data in jira_issues:
-                try:
-                    # Convert Jira issue data to JiraIssueData format
-                    jira_data = JiraIssueData(
-                        key=jira_issue_data["key"],
-                        summary=jira_issue_data.get("summary", ""),
-                        description=jira_issue_data.get("description", ""),
-                        status=jira_issue_data.get("status", ""),
-                        error_message=jira_issue_data.get("error_message", ""),
-                        error_type=jira_issue_data.get("error_type", ""),
-                        traceback=jira_issue_data.get("traceback", ""),
-                        site=jira_issue_data.get("site", ""),
-                        request_id=jira_issue_data.get("request_id", ""),
-                        created=jira_issue_data.get("created", ""),
-                        updated=jira_issue_data.get("updated", ""),
-                        parent_issue_key=jira_issue_data.get("parent_issue_key", ""),
-                    )
-
-                    # Add Jira issue to database
-                    self.add_jira_issue(jira_data)
-                    initialization_results["jira_issues_processed"] += 1
-
-                except Exception as e:
-                    error_msg = f"Failed to process Jira issue {jira_issue_data.get('key', 'unknown')}: {e}"
-                    self.logger.error(error_msg)
-                    initialization_results["errors"].append(error_msg)
-
-            # Process error logs by site
-            total_error_logs = sum(len(logs) for logs in error_logs_by_site.values())
-            self.logger.info(f"Processing {total_error_logs} error logs across {len(error_logs_by_site)} sites")
-
-            for site, error_logs in error_logs_by_site.items():
-                site_stats = {
-                    "site": site,
-                    "error_logs_processed": 0,
-                    "similar_issues_found": 0,
-                    "new_issues_created": 0,
-                    "occurrences_added": 0,
-                    "errors": [],
-                }
-
-                for error_log in error_logs:
-                    try:
-                        # Calculate embedding for error log
-                        error_text = (
-                            f"{error_log.error_message or ''} "
-                            f"{error_log.error_type or ''} "
-                            f"{error_log.traceback or ''}"
-                        ).strip()
-
-                        if not error_text:
-                            self.logger.warning(f"Skipping error log {error_log.message_id} - empty text content")
-                            continue
-
-                        error_embedding = self.embedding_service.generate_embedding(error_text)
-
-                        # Find similar Jira issues
-                        similar_issue = self.find_similar_jira_issue(
-                            error_log_embedding=error_embedding, site=site, similarity_threshold=0.85
-                        )
-
-                        if similar_issue:
-                            # Add occurrence to existing issue
-                            self.add_occurrence(
-                                jira_key=similar_issue["key"],
-                                doc_id=error_log.message_id,
-                                timestamp=error_log.timestamp,
-                            )
-                            site_stats["similar_issues_found"] += 1
-                            site_stats["occurrences_added"] += 1
-                            initialization_results["similar_issues_found"] += 1
-                            initialization_results["occurrences_added"] += 1
-
-                        else:
-                            # Create new Jira issue from error log
-                            new_jira_data = self._create_jira_issue_from_error_log(error_log, site)
-                            if new_jira_data:
-                                self.add_jira_issue(new_jira_data, error_log_data=error_log)
-                                site_stats["new_issues_created"] += 1
-                                initialization_results["new_issues_created"] += 1
-
-                        site_stats["error_logs_processed"] += 1
-                        initialization_results["error_logs_processed"] += 1
-
-                    except Exception as e:
-                        error_msg = f"Failed to process error log {error_log.message_id} for site {site}: {e}"
-                        self.logger.error(error_msg)
-                        site_stats["errors"].append(error_msg)
-                        initialization_results["errors"].append(error_msg)
-
-                initialization_results["site_stats"][site] = site_stats
+            if jira_issues:
+                jira_issues_results = self._update_jira(jira_issues)
+                initialization_results["jira_issues_processed"] += jira_issues_results["jira_issues_processed"]
+                initialization_results["jira_issues_added"] += jira_issues_results["jira_issues_added"]
+                initialization_results["jira_issues_skipped"] += jira_issues_results["jira_issues_skipped"]
+                initialization_results["errors"].extend(jira_issues_results["errors"])
 
             # Update final status
             initialization_results["status"] = "completed"
@@ -924,7 +966,13 @@ class JiraIssueEmbeddingDB:
                 f"{initialization_results['jira_issues_processed']} Jira issues and "
                 f"{initialization_results['error_logs_processed']} error logs"
             )
-
+            if error_logs:
+                error_logs_results = self._update_error_logs(error_logs, skip_error_logs_count, max_process_error_logs)
+                initialization_results["error_logs_processed"] += error_logs_results["error_logs_processed"]
+                initialization_results["similar_issues_found"] += error_logs_results["similar_issues_found"]
+                initialization_results["new_issues_created"] += error_logs_results["new_issues_created"]
+                initialization_results["occurrences_added"] += error_logs_results["occurrences_added"]
+                initialization_results["errors"].extend(error_logs_results["errors"])
             return initialization_results
 
         except Exception as e:
@@ -935,6 +983,8 @@ class JiraIssueEmbeddingDB:
                 "status": "failed",
                 "error": error_msg,
                 "jira_issues_processed": 0,
+                "jira_issues_added": 0,
+                "jira_issues_skipped": 0,
                 "error_logs_processed": 0,
                 "similar_issues_found": 0,
                 "new_issues_created": 0,
@@ -954,13 +1004,9 @@ class JiraIssueEmbeddingDB:
             JiraIssueData object or None if creation fails
         """
         try:
-            # Generate a unique Jira key for the new issue
-            timestamp_str = error_log.timestamp.strftime("%Y%m%d%H%M%S")
-            jira_key = f"VEL-{site.upper()}-{timestamp_str}"
-
             # Create JiraIssueData from error log
             jira_data = JiraIssueData(
-                key=jira_key,
+                key=None,
                 summary=error_log.error_message[:100] if error_log.error_message else "Error from logs",
                 description=f"Auto-generated issue from error log {error_log.message_id}",
                 status="Open",
@@ -971,7 +1017,8 @@ class JiraIssueEmbeddingDB:
                 request_id=error_log.request_id or "",
                 created=error_log.timestamp.isoformat(),
                 updated=error_log.timestamp.isoformat(),
-                parent_issue_key="",  # This is a parent issue
+                is_parent=True,
+                not_commit_to_jira=True,
             )
 
             return jira_data
@@ -1024,10 +1071,13 @@ class JiraIssueEmbeddingDB:
                     health_status["errors"].append("Embedding service not available")
                     health_status["overall_status"] = "unhealthy"
                 else:
-                    test_embedding = self.embedding_service.generate_embedding("test")
-                    normalized_embedding = self.normalize_embedding(test_embedding)
-                    is_unit_vector = self.validate_unit_vector(normalized_embedding)
-                    health_status["checks"]["embedding_service"] = "healthy" if is_unit_vector else "unhealthy"
+                    test_embedding = self._generate_embedding_from_text("test")
+                    if test_embedding is not None:
+                        is_unit_vector = self.validate_unit_vector(test_embedding)
+                        health_status["checks"]["embedding_service"] = "healthy" if is_unit_vector else "unhealthy"
+                    else:
+                        health_status["checks"]["embedding_service"] = "unhealthy"
+                        health_status["errors"].append("Embedding service test failed: cannot generate embedding")
                     if not is_unit_vector:
                         health_status["errors"].append("Embedding normalization failed")
                     health_status["overall_status"] = "unhealthy"
@@ -1112,12 +1162,16 @@ class JiraIssueEmbeddingDB:
             # Embedding performance test
             if self.embedding_service is not None:
                 start_time = time.time()
-                test_embedding = self.embedding_service.generate_embedding("performance test")
+                test_embedding = self._generate_embedding_from_text("performance test")
                 embedding_latency = time.time() - start_time
+
+                if test_embedding is None:
+                    self.logger.warning("Embedding performance test failed: cannot generate embedding")
+                    embedding_latency = 0
             else:
                 embedding_latency = 0
 
-            if self.embedding_service is not None:
+            if self.embedding_service is not None and test_embedding is not None:
                 start_time = time.time()
                 self.normalize_embedding(test_embedding)
                 normalization_latency = time.time() - start_time
@@ -1188,7 +1242,6 @@ class JiraIssueEmbeddingDB:
                 "database_info": {
                     "index_template": self.index_name_template,
                     "current_index": self.get_current_index_name(),
-                    "available_years": self.get_available_years(),
                 },
                 "health_status": self.health_check(),
                 "performance_metrics": self.performance_metrics(),

@@ -34,6 +34,7 @@ This specification defines a Jira Issue Embedding Database module that integrate
   "updated": "string",                // Last update timestamp
   "parent_issue_key": "string",       // Parent issue key (if any)
   "is_parent": "bool",                // True if parent_issue_key is empty, false otherwise
+  "not_commit_to_jira": "bool",       // True if this issue is not yet committed to Jira, false otherwise
   "created_at": "string",             // When this embedding record was created
   "updated_at": "string"             // When this embedding record was last updated
 }
@@ -131,6 +132,9 @@ This specification defines a Jira Issue Embedding Database module that integrate
       "is_parent": {
         "type": "boolean"
       },
+      "not_commit_to_jira": {
+        "type": "boolean"
+      },
       "created_at": {
         "type": "date",
         "format": "strict_date_optional_time||epoch_millis"
@@ -219,16 +223,7 @@ class JiraIssueEmbeddingDB:
         
     def get_embedding_stats(self, year=None):
         """Get statistics about the embedding database for a specific year."""
-        
-    def search_across_years(self, query_text, years=None, top_k=10, similarity_threshold=0.85):
-        """Search for similar Jira issues across multiple years."""
-        
-    def get_available_years(self):
-        """Get list of available years with data."""
-        
-    def migrate_old_issues(self, from_year, to_year):
-        """Migrate issues from one year to another."""
-        
+                
     def normalize_embedding(self, embedding_vector):
         """Normalize embedding vector to unit vector (length = 1)."""
         
@@ -349,12 +344,6 @@ JIRA_EMBEDDING_BATCH_SIZE=100
 1. Get recent error logs by site (past 24 hours)
 2. Call `daily_update()` method to process new error logs
 
-#### Cross-Year Operations
-1. Search across multiple years using `search_across_years()`
-2. Get available years using `get_available_years()`
-3. Migrate old issues between years using `migrate_old_issues()`
-4. Get statistics for specific year using `get_embedding_stats()`
-
 ### 7. Unit Vector Requirements
 
 #### Vector Normalization
@@ -391,7 +380,125 @@ OpenSearch's kNN search only supports **inner product** similarity, not direct c
 - **Error Handling**: Handle normalization failures gracefully
 - **OpenSearch Compatibility**: Use inner product with unit vectors for cosine similarity
 
-### 8. Performance Considerations
+### 8. Jira Custom Fields Requirements
+
+#### Dynamic Custom Field Handling
+
+Jira Cloud uses custom fields for all non-standard columns, and these fields must be dynamically queried and handled during data retrieval from Jira Cloud, not at the OpenSearch level.
+
+#### Custom Field Query Process
+
+**Field Discovery:**
+1. Use `get_jira_field_index()` method to query available custom fields from Jira Cloud
+2. Map custom field IDs to human-readable names
+3. Dynamically construct field queries based on discovered custom fields
+
+**Known VEL Custom Fields:**
+- `error_message` - Error message content
+- `error_type` - Type of error (e.g., Exception, Error, Warning)
+- `request_id` - Unique request identifier
+- `log_group` - Log group classification
+- `site` - Site name or identifier
+- `count` - Occurrence count
+- `traceback` - Full stack traceback
+- `parent_issue` - Parent issue reference
+
+#### Implementation Requirements
+
+**Jira Cloud Integration:**
+- Query custom fields dynamically using `get_jira_field_index()`
+- Map custom field IDs to field names during issue retrieval
+- Handle missing or undefined custom fields gracefully
+- Support field name changes without code modifications
+
+**Data Processing:**
+- Extract custom field values during Jira issue retrieval
+- Store custom field data in OpenSearch document structure
+- Maintain field mapping for consistent data access
+- Handle custom field value variations and formats
+
+**Field Mapping Strategy:**
+```python
+# Example custom field mapping
+custom_field_mapping = {
+    "error_message": "customfield_10001",
+    "error_type": "customfield_10002", 
+    "request_id": "customfield_10003",
+    "log_group": "customfield_10004",
+    "site": "customfield_10005",
+    "count": "customfield_10006",
+    "traceback": "customfield_10007",
+    "parent_issue": "customfield_10008"
+}
+```
+
+**Dynamic Field Handling:**
+- Query field index on initialization
+- Update field mapping when fields change
+- Handle field additions/removals gracefully
+- Maintain backward compatibility for field changes
+
+#### OpenSearch Integration
+
+**Document Structure:**
+- Store custom field values as regular document fields
+- Use consistent field naming (human-readable names)
+- Maintain field type consistency in OpenSearch mapping
+- Support dynamic field addition without index recreation
+
+**Field Mapping in OpenSearch:**
+```json
+{
+  "error_message": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
+  "error_type": {"type": "keyword"},
+  "request_id": {"type": "keyword"},
+  "log_group": {"type": "keyword"},
+  "site": {"type": "keyword"},
+  "count": {"type": "integer"},
+  "traceback": {"type": "text"},
+  "parent_issue": {"type": "keyword"}
+}
+```
+
+#### Error Handling
+
+**Missing Fields:**
+- Handle cases where custom fields are not defined
+- Provide default values for missing fields
+- Log warnings for undefined expected fields
+- Continue processing with available fields
+
+**Field Changes:**
+- Detect field ID changes in Jira
+- Update field mapping automatically
+- Maintain data consistency across updates
+- Handle field type changes gracefully
+
+#### Configuration
+
+**Environment Variables:**
+```bash
+# Jira Custom Fields
+JIRA_CUSTOM_FIELDS_ENABLED=true
+JIRA_CUSTOM_FIELDS_CACHE_TTL=3600
+JIRA_CUSTOM_FIELDS_AUTO_UPDATE=true
+JIRA_CUSTOM_FIELDS_FALLBACK_MODE=true
+```
+
+**Python Configuration:**
+```python
+class JiraCustomFieldConfig:
+    enabled: bool = True
+    cache_ttl: int = 3600  # seconds
+    auto_update: bool = True
+    fallback_mode: bool = True
+    known_fields: List[str] = [
+        "error_message", "error_type", "request_id", 
+        "log_group", "site", "count", "traceback", "parent_issue"
+    ]
+```
+
+### 9. Performance Considerations
 
 - **Year-Based Indexing**: Smaller indices per year for better performance and easier management
 - **Index Size**: Monitor index size as embeddings are large (1536 dimensions × 4 bytes = ~6KB per issue)
@@ -403,43 +510,15 @@ OpenSearch's kNN search only supports **inner product** similarity, not direct c
 - **Index Lifecycle**: Implement retention policies to archive/delete old year indices
 - **Vector Normalization**: Unit vector requirement adds minimal computational overhead
 - **OpenSearch Optimization**: Inner product with unit vectors provides optimal performance for cosine similarity
+- **Custom Field Caching**: Cache custom field mappings to reduce Jira API calls
+- **Dynamic Field Performance**: Optimize custom field query and mapping operations
 
-### 9. Monitoring and Maintenance
+### 10. Monitoring and Maintenance
 
 #### Health Checks
 - Get statistics about the embedding database
 - Monitor total documents, index size, and average occurrence count
 - Track performance metrics and health status
-
-#### Cleanup Operations
-- Remove occurrences older than specified days
-- Archive old year indices
-- Clean up orphaned references
-
-#### Cross-Year Operations
-- **`search_across_years()`**: Search for similar Jira issues across multiple years
-- **`get_available_years()`**: Get list of available years with data
-- **`migrate_old_issues()`**: Migrate issues from one year to another
-
-### 10. Year-Based Index Management
-
-#### Index Naming Strategy
-
-The year-based index naming provides several benefits:
-
-1. **Data Organization**: Issues are organized by year for better management
-2. **Performance**: Smaller indices for faster queries within a year
-3. **Retention**: Easy to archive or delete old year data
-4. **Scalability**: Prevents single index from becoming too large
-5. **Maintenance**: Easier to perform maintenance operations per year
-
-#### Index Lifecycle Management
-
-**Operations:**
-- Create index for current year or specific year
-- Search across multiple years
-- Get available years
-- Migrate old issues between years
 
 #### Configuration
 
@@ -449,12 +528,9 @@ The year-based index naming provides several benefits:
 - `top_k`: Number of results to return
 - `batch_size`: Batch size for bulk operations
 - `retention_years`: Number of years to keep data
-- `auto_create_year_index`: Auto-create index for new year
 
 **Environment Variables:**
 - `JIRA_EMBEDDING_INDEX_TEMPLATE`: Index name template
-- `JIRA_EMBEDDING_CURRENT_YEAR`: Current year setting
 - `JIRA_EMBEDDING_RETENTION_YEARS`: Data retention period
-- `JIRA_EMBEDDING_AUTO_CREATE_INDEX`: Auto-create setting
 
 This specification provides a comprehensive foundation for implementing a Jira issue embedding database that integrates seamlessly with the existing error log monitoring system and uses the RAG engine's embedding calculation method with year-based index organization.

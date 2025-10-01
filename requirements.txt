@@ -14,7 +14,7 @@ requests==2.31.0
 httpx==0.24.0
 
 # Jira integration
-jira==3.5.0
+jira==3.10.5
 
 # Data processing and reporting
 pandas>=2.0.0
