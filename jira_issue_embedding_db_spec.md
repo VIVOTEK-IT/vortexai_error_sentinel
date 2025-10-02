@@ -147,18 +147,20 @@ This specification defines a Jira Issue Embedding Database module that integrate
   }
 }
 ```
-## Initialize
-The database is initialize by flowing process:
-1. grab all issue from jira and calculate embedding for each issue.
-2. grab error log for past 6 month, site by site, and calculate embedding for each log
-3. for each parent issue in jira issue set, find similar error log by embedding. For each found error log, add to occurrence_list by error log's doc id and timestamp
+## Operational Workflows
 
-## Daily Update Flow
-The same as initialize process but just grab issue within past 24 hours
-1. grab error log for past 24 hours, site by site, and calculate embedding for each log
-2. find similar jira issue (only parent issue)
-2.1 if found: add doc_id and timestamp to occurancy list
-2.2 if not found, create a new jira issue 
+### Initialization (`scripts/init_jira_db.py`)
+1. Fetch issues from Jira Cloud (`get_all_jira_issues`).
+2. Compute embeddings and upsert documents into the `jira_issue_embedding` index.
+3. Backfill occurrences from historical error logs.
+
+### Daily Sync
+1. Ingest new error logs, compute embeddings, and correlate with existing Jira issues.
+2. Update occurrence lists accordingly.
+
+### Log Group Synchronization (`scripts/sync_jira_log_groups.py`)
+1. Fetch current Jira issues.
+2. Iterate all embedding documents and align `log_group` values from Jira.
 
 ## Module Components
 

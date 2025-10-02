@@ -466,6 +466,7 @@ class JiraIssueEmbeddingDB:
                 "not_commit_to_jira": jira_issue_data.not_commit_to_jira,
                 "created_at": datetime.now(timezone.utc).isoformat(),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
+                "log_group": jira_issue_data.log_group,
             }
 
             # Index document

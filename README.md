@@ -54,6 +54,13 @@ The Vortex Error Message Sentinel is designed to protect the Vortexai production
 └─────────────────────────────────────────────────────────────────┘
 ```
 
+### Jira Embedding Workflow
+
+1. **Ingestion (`scripts/init_jira_db.py`)** – fetch Jira issues, compute embeddings, and populate the `jira_issue_embedding` index with normalized vectors and occurrence scaffolding.
+2. **Log Group Synchronization (`scripts/sync_jira_log_groups.py`)** – periodically align `log_group` values in OpenSearch with the authoritative values in Jira.
+3. **Reporting (`scripts/run_weekly_report_2.py`)** – read issues directly from the embedding index, aggregate occurrences within the requested window, and generate per-site/combined Excel reports.
+
+
 ## 🚀 Quick Start
 
 ### Prerequisites
@@ -204,6 +211,19 @@ python scripts/generate_weekly_report.py --sites prod,stage
 
 # Generate report with custom date range
 python scripts/generate_weekly_report.py --start-date 2024-01-01 --end-date 2024-01-07
+
+# Simplified weekly report using Jira embeddings only
+python scripts/run_weekly_report_2.py --start-date 2025-01-01 --end-date 2025-01-07
+```
+
+### Synchronize Jira Log Groups
+
+```bash
+# Preview updates without modifying data
+python scripts/sync_jira_log_groups.py --dry-run
+
+# Apply updates (removing --dry-run)
+python scripts/sync_jira_log_groups.py
 ```
 
 ### Run Monitoring Service
@@ -263,6 +283,22 @@ generator = WeeklyReportGenerator(config)
 
 # Generate report
 report = generator.generate_report(sites=['prod', 'stage'])
+```
+
+#### `WeeklyReportGenerator2`
+Generates a simplified weekly report by pulling Jira issues directly from `JiraIssueEmbeddingDB`.
+
+```python
+from error_log_monitor.weekly_report_2 import WeeklyReportGenerator2
+from error_log_monitor.config import load_config
+from datetime import datetime, timedelta
+
+config = load_config()
+reporter = WeeklyReportGenerator2(config)
+start = datetime.utcnow() - timedelta(days=7)
+end = datetime.utcnow()
+report = reporter.generate_weekly_report(start, end)
+print(report["combined_excel_path"])
 ```
 
 ## 🐳 Docker Support
