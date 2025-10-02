@@ -2,6 +2,7 @@
 Jira Cloud API client for fetching detailed issue information.
 """
 
+import datetime
 import logging
 from typing import List, Optional, Dict
 from dataclasses import dataclass
@@ -67,7 +68,7 @@ def get_jira_field_index(jira=None):
 class JiraIssueDetails:
     """Detailed Jira issue information from Jira Cloud API."""
 
-    issue_key: str
+    key: str
     summary: str
     status: str
     parent_issue_key: Optional[str] = None
@@ -195,7 +196,7 @@ class JiraCloudClient:
                             parent_issue_key = field_value
 
             return JiraIssueDetails(
-                issue_key=issue_key,
+                key=issue_key,
                 summary=summary,
                 status=status,
                 parent_issue_key=parent_issue_key,
@@ -234,6 +235,8 @@ class JiraCloudClient:
 
     def clean_traceback(self, traceback: str) -> str:
         """Remove {code:python} from head and remove  {code} from tail"""
+        if not traceback:
+            return traceback
         if traceback.startswith("{code:python}"):
             traceback = traceback[len("{code:python}") :].strip()
         if traceback.endswith("{code}"):
@@ -245,7 +248,7 @@ class JiraCloudClient:
         return traceback
 
     def get_all_issues(
-        self, project_key: str = None, max_results: int = 1000, page_size: int = 100
+        self, project_key: str = None, max_results: int = 1000, page_size: int = 100, duration_in_days: int = 180
     ) -> List[JiraIssueDetails]:
         """
         Get all Jira issues for a project or all accessible projects using search_issues with pagination.
@@ -265,9 +268,9 @@ class JiraCloudClient:
 
             # Build JQL query
             if project_key:
-                jql = f"project = {project_key} AND issuetype = Task ORDER BY created ASC"
+                jql = f"project = {project_key} AND issuetype = Task AND created >= -{duration_in_days}d ORDER BY created ASC"
             else:
-                jql = "issuetype = Task ORDER BY created DESC"
+                jql = f"issuetype = Task AND created >= -{duration_in_days}d ORDER BY created DESC"
 
             logger.info(f"Searching for Jira issues with JQL: {jql} (max: {max_results}, page_size: {page_size})")
 
@@ -371,7 +374,7 @@ class JiraCloudClient:
                                         parent_issue_key = field_value
 
                         issue_detail = JiraIssueDetails(
-                            issue_key=issue.key,
+                            key=issue.key,
                             summary=summary,
                             status=status,
                             parent_issue_key=parent_issue_key,
@@ -391,7 +394,7 @@ class JiraCloudClient:
                         batch_count += 1
 
                     except Exception as e:
-                        logger.warning(f"Error processing issue {issue.key}: {e}")
+                        logger.warning(f"Error processing issue {issue.key}: {e}", exc_info=True)
                         continue
 
                 total_fetched += batch_count
@@ -400,11 +403,24 @@ class JiraCloudClient:
                 logger.info(f"Fetched {batch_count} issues in this batch (total: {total_fetched})")
 
                 # If we got fewer issues than requested, we've reached the end of available issues
-                if batch_count < current_page_size and total_fetched > 400:
-                    logger.info(
-                        f"Reached end of available issues (got {batch_count} out of {current_page_size} requested)"
-                    )
-                    break
+                if batch_count < current_page_size:
+                    try:
+                        created_str = issue_details[-1].created
+                        last_created = datetime.datetime.strptime(created_str, "%Y-%m-%dT%H:%M:%S.%f%z")
+                        twelve_hours_ago = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(hours=12)
+                        if last_created > twelve_hours_ago:
+                            logger.info(
+                                "Reached end of available issues (got %s out of %s requested)",
+                                batch_count,
+                                current_page_size,
+                            )
+                            break
+                    except Exception:
+                        logger.info(
+                            "Reached end of available issues (got %s out of %s requested)",
+                            batch_count,
+                            current_page_size,
+                        )
 
                 # Add a small delay to avoid overwhelming the API
                 import time

@@ -214,6 +214,9 @@ python scripts/generate_weekly_report.py --start-date 2024-01-01 --end-date 2024
 
 # Simplified weekly report using Jira embeddings only
 python scripts/run_weekly_report_2.py --start-date 2025-01-01 --end-date 2025-01-07
+
+# Book-of-record weekly report (Jira + embeddings + error logs)
+python scripts/generate_weekly_report_3.py --end-date 2025-01-07
 ```
 
 ### Synchronize Jira Log Groups

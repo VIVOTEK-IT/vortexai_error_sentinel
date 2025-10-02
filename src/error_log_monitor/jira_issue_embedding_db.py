@@ -627,6 +627,32 @@ class JiraIssueEmbeddingDB:
             self.logger.error(f"Failed to get Jira issue {jira_key}: {e}")
             return None
 
+    def remove_duplicate_occurrences(self, doc_key: str) -> bool:
+        """
+        Remove duplicate occurrences from a Jira issue.
+        """
+        try:
+            doc_data = self.opensearch_connect.get(index=self.get_current_index_name(), id=doc_key)
+            if not doc_data:
+                return False
+            occurrences = doc_data.get("occurrence_list", [])
+            occ_set = set()
+            occ_data = {}
+            for occ in occurrences:
+                occ_set.add(occ["doc_id"])
+                occ_data[occ["doc_id"]] = occ
+            occurences = []
+            for occ_id in occ_set:
+                occurences.append(occ_data[occ_id])
+            if len(occurences) < len(occ_set):
+                self.opensearch_connect.update(
+                    index=self.get_current_index_name(), id=doc_key, body={"occurrence_list": occurences}
+                )
+        except Exception as e:
+            self.logger.error(f"Failed to remove duplicate occurrences for {doc_key}: {e}")
+            return False
+        return True
+
     def get_occurrences(self, jira_key: str) -> List[OccurrenceData]:
         """
         Get all occurrences for a specific Jira issue.
