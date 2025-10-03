@@ -28,6 +28,7 @@ def get_reports_dir() -> str:
 
 class ReportRow(Protocol):
     """Protocol for report row data."""
+
     key: str
     site: str
     count: int
@@ -39,41 +40,46 @@ class ReportRow(Protocol):
 
 
 def generate_excel_report(
-    site: str, 
-    rows: List[ReportRow], 
-    start: datetime, 
-    end: datetime, 
-    report_type: str = "report"
+    site: str, rows: List[ReportRow], start: datetime, end: datetime, report_type: str = "report"
 ) -> str:
     """Generate Excel report for a specific site."""
-    data = [
-        {
-            "Key": sanitize_for_excel(row.key),
-            "Site": sanitize_for_excel(row.site),
-            "Count": row.count,
-            "Error_Message": sanitize_for_excel(row.error_message),
-            "Status": sanitize_for_excel(row.status),
-            "Log Group": sanitize_for_excel(row.log_group),
-            "Latest Update": row.latest_update.strftime("%Y-%m-%d %H:%M:%S"),
-            "Note": sanitize_for_excel(row.note),
-        }
-        for row in rows
-    ]
-    df = pd.DataFrame(data)
     reports_dir = get_reports_dir()
     filename = f"{report_type}_{site}_{start.strftime('%Y%m%d_%H%M')}_{end.strftime('%Y%m%d_%H%M')}.xlsx"
     filepath = os.path.join(reports_dir, filename)
+
     with pd.ExcelWriter(filepath, engine="openpyxl") as writer:
-        df.to_excel(writer, sheet_name=f"{site.title()} Report", index=False)
+        if rows:
+            # Generate report with data
+            data = [
+                {
+                    "Key": sanitize_for_excel(row.key),
+                    "Site": sanitize_for_excel(row.site),
+                    "Count": row.count,
+                    "Error_Message": sanitize_for_excel(row.error_message),
+                    "Status": sanitize_for_excel(row.status),
+                    "Log Group": sanitize_for_excel(row.log_group),
+                    "Latest Update": row.latest_update.strftime("%Y-%m-%d %H:%M:%S"),
+                    "Note": sanitize_for_excel(row.note),
+                }
+                for row in rows
+            ]
+            df = pd.DataFrame(data)
+            df.to_excel(writer, sheet_name=f"{site.title()} Report", index=False)
+        else:
+            # Generate empty report with summary
+            summary_data = {
+                "Message": [f"No issues found for {site} site"],
+                "Start Date": [start.strftime("%Y-%m-%d %H:%M:%S")],
+                "End Date": [end.strftime("%Y-%m-%d %H:%M:%S")],
+            }
+            summary_df = pd.DataFrame(summary_data)
+            summary_df.to_excel(writer, sheet_name=f"{site.title()} Report", index=False)
+
     return filepath
 
 
 def generate_html_report(
-    site: str, 
-    rows: List[ReportRow], 
-    start: datetime, 
-    end: datetime, 
-    report_type: str = "report"
+    site: str, rows: List[ReportRow], start: datetime, end: datetime, report_type: str = "report"
 ) -> str:
     """Generate HTML report for a specific site."""
     reports_dir = get_reports_dir()
@@ -112,20 +118,21 @@ def generate_html_report(
 
 
 def generate_combined_excel_report(
-    site_reports: Dict[str, Dict[str, Any]], 
-    start: datetime, 
-    end: datetime, 
-    report_type: str = "report"
+    site_reports: Dict[str, Dict[str, Any]], start: datetime, end: datetime, report_type: str = "report"
 ) -> str:
     """Generate combined Excel report for all sites."""
     reports_dir = get_reports_dir()
     filename = f"{report_type}_combined_{start.strftime('%Y%m%d_%H%M')}_{end.strftime('%Y%m%d_%H%M')}.xlsx"
     filepath = os.path.join(reports_dir, filename)
+
     with pd.ExcelWriter(filepath, engine="openpyxl") as writer:
+        sheets_created = False
+
         for site, payload in site_reports.items():
             rows = payload.get("issues", [])
-            if not rows:  # Skip empty sites to avoid "At least one sheet must be visible" error
+            if not rows:  # Skip empty sites
                 continue
+
             df = pd.DataFrame(
                 [
                     {
@@ -142,5 +149,16 @@ def generate_combined_excel_report(
                 ]
             )
             df.to_excel(writer, sheet_name=site.title(), index=False)
-    return filepath
+            sheets_created = True
 
+        # If no sheets were created (all sites empty), create a summary sheet
+        if not sheets_created:
+            summary_data = {
+                "Message": ["No issues found for the specified time period"],
+                "Start Date": [start.strftime("%Y-%m-%d %H:%M:%S")],
+                "End Date": [end.strftime("%Y-%m-%d %H:%M:%S")],
+            }
+            summary_df = pd.DataFrame(summary_data)
+            summary_df.to_excel(writer, sheet_name="Summary", index=False)
+
+    return filepath

@@ -2,8 +2,7 @@
 
 import json
 import logging
-from datetime import datetime, timezone
-from typing import Dict, Any, Optional
+from typing import Dict, Any
 
 from error_log_monitor.config import load_config
 from error_log_monitor.daily_report import DailyReportGenerator
@@ -28,83 +27,78 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     try:
         logger.info("Starting daily report generation Lambda function")
-        
+
         # Load configuration
         config = load_config()
-        
+
         # Initialize services
         report_generator = DailyReportGenerator()
         email_service = EmailService(config.email)
-        
+
         # Generate daily report
         logger.info("Generating daily report...")
         report_data = report_generator.generate_daily_report()
-        
+
         # Calculate total issues across all sites
         total_issues = sum(
-            len(site_data.get("issues", [])) 
-            for site_data in report_data.get("site_reports", {}).values()
+            len(site_data.get("issues", [])) for site_data in report_data.get("site_reports", {}).values()
         )
-        
+
         # Generate HTML email content
         logger.info("Generating HTML email content...")
         html_content = generate_daily_report_html_email(
             site_reports=report_data.get("site_reports", {}),
             start_date=report_data.get("start_date"),
             end_date=report_data.get("end_date"),
-            total_issues=total_issues
+            total_issues=total_issues,
         )
-        
+
         # Send email
         logger.info("Sending daily report email...")
         email_sent = email_service.send_daily_report_email(html_content)
-        
+
         if not email_sent:
             logger.error("Failed to send daily report email")
             return {
                 "statusCode": 500,
-                "body": json.dumps({
-                    "error": "Failed to send daily report email",
-                    "report_generated": True,
-                    "total_issues": total_issues
-                })
+                "body": json.dumps(
+                    {
+                        "error": "Failed to send daily report email",
+                        "report_generated": True,
+                        "total_issues": total_issues,
+                    }
+                ),
             }
-        
+
         # Prepare response
         response_data = {
             "message": "Daily report generated and sent successfully",
             "report_period": {
                 "start_date": report_data.get("start_date").isoformat(),
-                "end_date": report_data.get("end_date").isoformat()
+                "end_date": report_data.get("end_date").isoformat(),
             },
             "total_issues": total_issues,
             "site_reports": {
                 site: {
                     "count": len(site_data.get("issues", [])),
                     "excel_path": site_data.get("excel_path"),
-                    "html_path": site_data.get("html_path")
+                    "html_path": site_data.get("html_path"),
                 }
                 for site, site_data in report_data.get("site_reports", {}).items()
             },
             "combined_excel_path": report_data.get("combined_excel_path"),
-            "email_sent": True
+            "email_sent": True,
         }
-        
+
         logger.info(f"Daily report completed successfully. Total issues: {total_issues}")
-        
-        return {
-            "statusCode": 200,
-            "body": json.dumps(response_data, default=str)
-        }
-        
+
+        return {"statusCode": 200, "body": json.dumps(response_data, default=str)}
+
     except Exception as e:
         logger.error(f"Error in daily report Lambda function: {str(e)}", exc_info=True)
         return {
             "statusCode": 500,
-            "body": json.dumps({
-                "error": f"Internal server error: {str(e)}",
-                "report_generated": False
-            })
+            "body": json.dumps({"error": f"Internal server error: {str(e)}", "report_generated": False}),
         }
 
 
@@ -122,58 +116,51 @@ def generate_daily_report_only(event: Dict[str, Any], context: Any) -> Dict[str,
     """
     try:
         logger.info("Starting daily report generation (no email)")
-        
+
         # Load configuration
         config = load_config()
-        
+
         # Initialize report generator
         report_generator = DailyReportGenerator()
-        
+
         # Generate daily report
         logger.info("Generating daily report...")
         report_data = report_generator.generate_daily_report()
-        
+
         # Calculate total issues across all sites
         total_issues = sum(
-            len(site_data.get("issues", [])) 
-            for site_data in report_data.get("site_reports", {}).values()
+            len(site_data.get("issues", [])) for site_data in report_data.get("site_reports", {}).values()
         )
-        
+
         # Prepare response
         response_data = {
             "message": "Daily report generated successfully",
             "report_period": {
                 "start_date": report_data.get("start_date").isoformat(),
-                "end_date": report_data.get("end_date").isoformat()
+                "end_date": report_data.get("end_date").isoformat(),
             },
             "total_issues": total_issues,
             "site_reports": {
                 site: {
                     "count": len(site_data.get("issues", [])),
                     "excel_path": site_data.get("excel_path"),
-                    "html_path": site_data.get("html_path")
+                    "html_path": site_data.get("html_path"),
                 }
                 for site, site_data in report_data.get("site_reports", {}).items()
             },
             "combined_excel_path": report_data.get("combined_excel_path"),
-            "email_sent": False
+            "email_sent": False,
         }
-        
+
         logger.info(f"Daily report generated successfully. Total issues: {total_issues}")
-        
-        return {
-            "statusCode": 200,
-            "body": json.dumps(response_data, default=str)
-        }
-        
+
+        return {"statusCode": 200, "body": json.dumps(response_data, default=str)}
+
     except Exception as e:
         logger.error(f"Error in daily report generation: {str(e)}", exc_info=True)
         return {
             "statusCode": 500,
-            "body": json.dumps({
-                "error": f"Internal server error: {str(e)}",
-                "report_generated": False
-            })
+            "body": json.dumps({"error": f"Internal server error: {str(e)}", "report_generated": False}),
         }
 
 
@@ -191,19 +178,19 @@ def test_email_service(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     try:
         logger.info("Testing email service configuration")
-        
+
         # Load configuration
         config = load_config()
-        
+
         # Initialize email service
         email_service = EmailService(config.email)
-        
+
         # Check if sender email is verified
         sender_verified = email_service.is_email_verified(config.email.sender_email)
-        
+
         # Get send quota
         quota_info = email_service.get_send_quota()
-        
+
         # Send test email
         test_html = """
         <html>
@@ -214,33 +201,24 @@ def test_email_service(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         </body>
         </html>
         """
-        
+
         email_sent = email_service.send_daily_report_email(
             html_content=test_html,
             subject="[TEST] VortexAI Error Monitoring System - Email Test",
-            recipients=config.email.recipients
+            recipients=config.email.recipients,
         )
-        
+
         response_data = {
             "message": "Email service test completed",
             "sender_email": config.email.sender_email,
             "sender_verified": sender_verified,
             "recipients": config.email.recipients,
             "email_sent": email_sent,
-            "quota_info": quota_info
-        }
-        
-        return {
-            "statusCode": 200,
-            "body": json.dumps(response_data, default=str)
-        }
-        
-    except Exception as e:
-        logger.error(f"Error in email service test: {str(e)}", exc_info=True)
-        return {
-            "statusCode": 500,
-            "body": json.dumps({
-                "error": f"Email service test failed: {str(e)}"
-            })
+            "quota_info": quota_info,
         }
 
+        return {"statusCode": 200, "body": json.dumps(response_data, default=str)}
+
+    except Exception as e:
+        logger.error(f"Error in email service test: {str(e)}", exc_info=True)
+        return {"statusCode": 500, "body": json.dumps({"error": f"Email service test failed: {str(e)}"})}

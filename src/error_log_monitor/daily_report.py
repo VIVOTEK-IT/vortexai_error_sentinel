@@ -3,29 +3,32 @@
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, Iterable, List, Optional, Sequence
-
-import pandas as pd
+from typing import Any, Dict, List, Optional
 
 from error_log_monitor.config import load_config
 from error_log_monitor.embedding_service import EmbeddingService
-from error_log_monitor.jira_issue_embedding_db import JiraIssueEmbeddingDB, JiraIssueData
-from error_log_monitor.jira_cloud_client import JiraCloudClient, JiraIssueDetails
+from error_log_monitor.jira_issue_embedding_db import JiraIssueEmbeddingDB
+from error_log_monitor.jira_cloud_client import JiraCloudClient
 from error_log_monitor.opensearch_client import OpenSearchClient, ErrorLog
+from error_log_monitor.report_shared import (
+    JiraIssueSnapshot,
+    fetch_embedding_docs,
+    fetch_error_logs,
+    fetch_jira_snapshots,
+    filter_occurrence_timestamps,
+    merge_orphan_embedding_docs,
+    sync_embedding_statuses,
+    update_embedding_with_error_logs,
+)
 from error_log_monitor.report_utils import (
     generate_excel_report,
     generate_html_report,
     generate_combined_excel_report,
-    get_reports_dir,
-    sanitize_for_excel,
-    ReportRow,
 )
 
 logger = logging.getLogger(__name__)
-
 
 
 @dataclass
@@ -67,11 +70,10 @@ class DailyReportGenerator:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
-    def generate_daily_report(self, end_date: Optional[datetime] = None) -> Dict[str, Any]:
-        """Generate daily report for the past 24 hours."""
-        end_date = (end_date or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    def generate_daily_report(self) -> Dict[str, Any]:
+        """Generate daily report covering the most recent 24-hour window."""
+        end_date = datetime.now(timezone.utc).astimezone(timezone.utc)
         a_day_ago = (end_date - timedelta(hours=24)).astimezone(timezone.utc)
-        six_months_ago = (end_date - timedelta(days=180)).astimezone(timezone.utc)
 
         logger.info("Fetching Jira issues for the past 1 day")
         jira_snapshots = self._fetch_recent_jira_issues(duration_in_days=1)
@@ -79,7 +81,7 @@ class DailyReportGenerator:
 
         logger.info("Fetching embedding issues for the past 24 hours")
         daily_embedding_docs = self._fetch_embedding_issues(a_day_ago, end_date)
-
+        logger.info(f"Found {len(daily_embedding_docs)} embedding issues")
         logger.info("Synchronizing statuses and merging orphan embedding entries")
         self._sync_embedding_statuses(daily_embedding_docs, jira_by_key)
 
@@ -106,77 +108,18 @@ class DailyReportGenerator:
     # ------------------------------------------------------------------
     # Data acquisition
     # ------------------------------------------------------------------
-    def _fetch_recent_jira_issues(self, duration_in_days = 30) -> List[JiraIssueData]:
-        all_issues: List[JiraIssueDetails] = self.jira_client.get_all_issues(
-            project_key=self.config.jira.project_key, duration_in_days=duration_in_days
+    def _fetch_recent_jira_issues(self, duration_in_days: int = 30) -> List[JiraIssueSnapshot]:
+        return fetch_jira_snapshots(
+            self.jira_client,
+            project_key=self.config.jira.project_key,
+            duration_in_days=duration_in_days,
         )
-        return all_issues
 
     def _fetch_embedding_issues(self, since: datetime, until: datetime) -> List[Dict[str, Any]]:
-        client = self.jira_embedding_db.opensearch_connect
-        index_name = self.jira_embedding_db.get_current_index_name()
-
-        query = {
-            "size": 500,
-            "query": {
-                "range": {
-                    "updated": {
-                        "gte": since.isoformat(),
-                        "lte": until.isoformat(),
-                    }
-                }
-            },
-            "_source": [
-                "summary",
-                "status",
-                "error_message",
-                "site",
-                "log_group",
-                "parent_issue_key",
-                "occurrence_list",
-                "key",
-                "updated",
-            ],
-        }
-
-        response = client.search(index=index_name, body=query, scroll="2m")
-        scroll_id = response.get("_scroll_id")
-        results: List[Dict[str, Any]] = []
-
-        try:
-            while True:
-                hits = response.get("hits", {}).get("hits", [])
-                if not hits:
-                    break
-
-                for hit in hits:
-                    source = hit.get("_source", {})
-                    source["doc_id"] = hit.get("_id")
-                    results.append(source)
-
-                if not scroll_id:
-                    break
-                response = client.scroll(scroll_id=scroll_id, scroll="2m")
-                scroll_id = response.get("_scroll_id")
-        finally:
-            if scroll_id:
-                try:
-                    client.clear_scroll(scroll_id=scroll_id)
-                except Exception:
-                    logger.warning("Failed to clear scroll context", exc_info=True)
-
-        return results
+        return fetch_embedding_docs(self.jira_embedding_db, since, until)
 
     def _fetch_recent_error_logs(self, start: datetime, end: datetime) -> List[ErrorLog]:
-        sites = {"prod", "stage"}
-        logs: List[ErrorLog] = []
-        for site in sites:
-            try:
-                site_logs = self.opensearch_client.get_error_logs(site, start, end, limit=5000)
-                logs.extend(site_logs)
-            except Exception:
-                logger.warning("Failed to fetch logs for site %s", site, exc_info=True)
-        return logs
+        return fetch_error_logs(self.opensearch_client, start, end)
 
     # ------------------------------------------------------------------
     # Cleanup and synchronization
@@ -184,110 +127,18 @@ class DailyReportGenerator:
     def _sync_embedding_statuses(
         self, embedding_docs: List[Dict[str, Any]], jira_by_key: Dict[str, JiraIssueSnapshot]
     ) -> None:
-        index_name = self.jira_embedding_db.get_current_index_name()
-        client = self.jira_embedding_db.opensearch_connect
-        for doc in embedding_docs:
-            key = doc.get("key")
-            if not key or key not in jira_by_key:
-                continue
-            snapshot = jira_by_key[key]
-            jira_status = snapshot.status or "Unknown"
-            current_status = doc.get("status") or "Unknown"
-            payload = {"status": jira_status}
-            if snapshot.log_group:
-                payload["log_group"] = snapshot.log_group
-            if jira_status != current_status or (snapshot.log_group and doc.get("log_group") != snapshot.log_group):
-                try:
-                    client.update(
-                        index=index_name,
-                        id=doc.get("doc_id"),
-                        body={"doc": {**payload}},
-                    )
-                    doc.update(payload)
-                except Exception:
-                    logger.warning("Failed to update status/log_group for %s", key, exc_info=True)
+        sync_embedding_statuses(self.jira_embedding_db, embedding_docs, jira_by_key)
 
     def _merge_orphan_embedding_docs(self, embedding_docs: List[Dict[str, Any]]) -> None:
-        for doc in embedding_docs:
-            if doc.get("key"):
-                continue
-            self._merge_single_orphan(doc)
-
-    def _merge_single_orphan(self, orphan: Dict[str, Any]) -> None:
-        summary = orphan.get("summary", "")
-        error_message = orphan.get("error_message", "")
-        status = orphan.get("status", "Unknown")
-        site = orphan.get("site") or "unknown"
-
-        placeholder = JiraIssueData(
-            key="",
-            summary=summary,
-            description="",
-            status=status,
-            created=datetime.now(timezone.utc).isoformat(),
-            updated=datetime.now(timezone.utc).isoformat(),
-            error_message=error_message,
-            site=site,
-        )
-
-        embedding = self.jira_embedding_db._generate_embedding_from_data(placeholder)
-        if not embedding:
-            return
-
-        match = self.jira_embedding_db.find_similar_jira_issue(embedding, site)
-        if not match or not match.get("key"):
-            return
-
-        target_key = match["doc_id"]
-        occurrences = orphan.get("occurrence_list", []) or []
-        for occ in occurrences:
-            try:
-                ts = occ.get("timestamp")
-                if ts:
-                    self.jira_embedding_db.add_occurrence(
-                        source_doc_id=target_key,
-                        doc_id=occ.get("doc_id", f"merged-{orphan.get('doc_id')}-{ts}"),
-                        timestamp=ts,
-                    )
-            except Exception:
-                logger.warning("Failed to merge occurrence into %s", target_key, exc_info=True)
-
-        try:
-            self.jira_embedding_db.delete_issue(orphan.get("doc_id"))
-        except Exception:
-            logger.warning("Failed to delete orphan embedding doc %s", orphan.get("doc_id"), exc_info=True)
+        merge_orphan_embedding_docs(self.jira_embedding_db, embedding_docs)
 
     # ------------------------------------------------------------------
     # Error log processing
     # ------------------------------------------------------------------
     def _update_embedding_with_error_logs(self, logs: List[ErrorLog]) -> None:
-        for log in logs:
-            embedding = self._build_log_embedding(log)
-            if embedding is None:
-                continue
-            match = self.jira_embedding_db.find_similar_jira_issue(embedding, log.site, similarity_threshold=0.85)
-            if not match or not match.get("key"):
-                continue
-            try:
-                self.jira_embedding_db.add_occurrence(
-                    source_doc_id=match["doc_id"],
-                    doc_id=log.message_id,
-                    timestamp=log.timestamp.isoformat(),
-                )
-                self.jira_embedding_db.remove_duplicate_occurrences(match["doc_id"])
-            except Exception:
-                logger.warning("Failed to add occurrence for %s", match["key"], exc_info=True)
-
-    def _build_log_embedding(self, log: ErrorLog) -> Optional[List[float]]:
-        text = " ".join(filter(None, [log.error_message, log.error_type, log.traceback]))
-        if not text.strip():
-            return None
-        try:
-            embedding = self.embedding_service.generate_embedding(text)
-            return embedding
-        except Exception:
-            logger.warning("Failed to generate embedding for log %s", log.message_id, exc_info=True)
-            return None
+        update_embedding_with_error_logs(
+            self.jira_embedding_db, self.embedding_service, logs, similarity_threshold=0.85
+        )
 
     # ------------------------------------------------------------------
     # Reporting helpers
@@ -302,7 +153,7 @@ class DailyReportGenerator:
                 continue
             site = doc.get("site", "unknown")
             occurrences = doc.get("occurrence_list", []) or []
-            recent_timestamps = self._filter_occurrence_timestamps(occurrences, start_date, end_date)
+            recent_timestamps = filter_occurrence_timestamps(occurrences, start_date, end_date)
             if not recent_timestamps:
                 continue
 
@@ -327,36 +178,8 @@ class DailyReportGenerator:
             payload["count"] = len(rows)
         return reports
 
-
-
-
     # ------------------------------------------------------------------
     # Utilities
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def _parse_date(value: str) -> Optional[datetime]:
-        if not value:
-            return None
-        try:
-            dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
-            return dt.astimezone(timezone.utc)
-        except ValueError:
-            return None
-
-    def _filter_occurrence_timestamps(
-        self, occurrences: Iterable[Dict[str, Any]], start_date: datetime, end_date: datetime
-    ) -> List[datetime]:
-        timestamps: List[datetime] = []
-        for occurrence in occurrences:
-            ts = occurrence.get("timestamp")
-            if not ts:
-                continue
-            parsed = self._parse_date(ts) if isinstance(ts, str) else ts
-            if not isinstance(parsed, datetime):
-                continue
-            parsed = parsed.astimezone(timezone.utc)
-            if start_date <= parsed <= end_date:
-                timestamps.append(parsed)
-        return timestamps
-
+    # Retained for backward compatibility but no additional utilities required

@@ -36,7 +36,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', 'src'))
 from error_log_monitor.config import load_config
 from error_log_monitor.opensearch_client import OpenSearchClient, ErrorLog
 from error_log_monitor.embedding_service import EmbeddingService
-from error_log_monitor.jira_issue_embedding_db import JiraIssueEmbeddingDB, JiraIssueData
+from error_log_monitor.jira_issue_embedding_db import JiraIssueEmbeddingDB
 from error_log_monitor.jira_cloud_client import JiraCloudClient
 
 # Set up logging
@@ -46,7 +46,7 @@ logger = logging.getLogger(__name__)
 
 def get_all_jira_issues(
     jira_cloud_client: JiraCloudClient, project_key: str = None, page_size: int = 100
-) -> List[JiraIssueData]:
+) -> List[JiraIssueDetails]:
     """
     Get all Jira issues from Jira Cloud API and format them for the embedding database.
 
@@ -56,7 +56,7 @@ def get_all_jira_issues(
         page_size: Number of issues to fetch per page (default: 100)
 
     Returns:
-        List of JiraIssueData objects
+        List of JiraIssueDetails objects
     """
     try:
         logger.info(f"Fetching Jira issues from API (project: {project_key or 'all'})")
@@ -68,50 +68,8 @@ def get_all_jira_issues(
             logger.warning("No Jira issues found")
             return []
 
-        # Format issues for embedding database
-        formatted_issues = []
-        for issue_detail in jira_issue_details:
-            # Use site from Jira issue or determine from issue key
-            site = issue_detail.site or _determine_site_from_issue_key(issue_detail.issue_key)
-
-            # Use error information directly from Jira issue or extract from description
-            error_message = issue_detail.error_message
-            error_type = issue_detail.error_type
-            traceback = issue_detail.traceback
-
-            # If no error info from Jira fields, try to extract from description
-            if not error_message or not error_type:
-                extracted_error_message, extracted_error_type, extracted_traceback = _extract_error_info(issue_detail)
-                error_message = error_message or extracted_error_message
-                error_type = error_type or extracted_error_type
-                traceback = traceback or extracted_traceback
-            is_parent = True
-            if (
-                issue_detail.parent_issue_key and len(issue_detail.parent_issue_key) > 3
-            ) or issue_detail.status == "SUB ISSUES":
-                is_parent = False
-            formatted_issue = JiraIssueData(
-                key=issue_detail.issue_key,
-                summary=issue_detail.summary or "",
-                description=issue_detail.description or "",
-                status=issue_detail.status or "Unknown",
-                created=issue_detail.created or "",
-                updated=issue_detail.updated or "",
-                site=site,
-                parent_issue_key=issue_detail.parent_issue_key or "",
-                error_message=error_message or "",
-                error_type=error_type or "",
-                traceback=traceback or "",
-                request_id=issue_detail.request_id or f"jira-{issue_detail.issue_key}",
-                log_group=issue_detail.log_group or "",
-                count=issue_detail.count or 1,
-                is_parent=is_parent,
-                not_commit_to_jira=False,  # Default to False for existing Jira issues
-            )
-            formatted_issues.append(formatted_issue)
-
-        logger.info(f"Successfully formatted {len(formatted_issues)} Jira issues")
-        return formatted_issues
+        logger.info(f"Retrieved {len(jira_issue_details)} Jira issues")
+        return jira_issue_details
 
     except Exception as e:
         logger.error(f"Failed to fetch Jira issues: {e}")

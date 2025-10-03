@@ -1,0 +1,308 @@
+"""Shared utilities for report generation modules."""
+
+from __future__ import annotations
+
+import logging
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
+
+from error_log_monitor.embedding_service import EmbeddingService
+from error_log_monitor.jira_cloud_client import JiraCloudClient, JiraIssueDetails
+from error_log_monitor.jira_issue_embedding_db import JiraIssueEmbeddingDB
+from error_log_monitor.opensearch_client import ErrorLog, OpenSearchClient
+
+logger = logging.getLogger(__name__)
+
+_DEFAULT_SOURCE_FIELDS: Sequence[str] = (
+    "summary",
+    "status",
+    "error_message",
+    "site",
+    "log_group",
+    "parent_issue_key",
+    "occurrence_list",
+    "key",
+    "updated",
+)
+
+
+@dataclass
+class JiraIssueSnapshot:
+    key: str
+    status: str
+    site: Optional[str]
+    log_group: Optional[str]
+    summary: str
+    updated: Optional[datetime]
+
+
+def parse_iso_datetime(value: Optional[str]) -> Optional[datetime]:
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        return dt.astimezone(timezone.utc)
+    except ValueError:
+        return None
+
+
+def fetch_jira_snapshots(
+    jira_client: JiraCloudClient,
+    project_key: Optional[str],
+    since: Optional[datetime] = None,
+    duration_in_days: Optional[int] = None,
+) -> List[JiraIssueSnapshot]:
+    raw_issues: List[JiraIssueDetails] = jira_client.get_all_issues(
+        project_key=project_key, duration_in_days=duration_in_days
+    )
+    snapshots: List[JiraIssueSnapshot] = []
+    for issue in raw_issues:
+        key = getattr(issue, "key", None)
+        if not key:
+            continue
+        updated_dt = parse_iso_datetime(getattr(issue, "updated", None))
+        created_dt = parse_iso_datetime(getattr(issue, "created", None))
+        reference = updated_dt or created_dt
+        if since and reference and reference < since:
+            continue
+        snapshots.append(
+            JiraIssueSnapshot(
+                key=key,
+                status=getattr(issue, "status", "Unknown") or "Unknown",
+                site=getattr(issue, "site", None),
+                log_group=getattr(issue, "log_group", None),
+                summary=getattr(issue, "summary", ""),
+                updated=reference,
+            )
+        )
+    return snapshots
+
+
+def fetch_embedding_docs(
+    jira_embedding_db: JiraIssueEmbeddingDB,
+    since: datetime,
+    until: datetime,
+    source_fields: Optional[Sequence[str]] = None,
+    batch_size: int = 500,
+    scroll_ttl: str = "2m",
+) -> List[Dict[str, Any]]:
+    client = jira_embedding_db.opensearch_connect
+    index_name = jira_embedding_db.get_current_index_name()
+
+    query: Dict[str, Any] = {
+        "size": batch_size,
+        "query": {
+            "range": {
+                "updated": {
+                    "gte": since.isoformat(),
+                    "lte": until.isoformat(),
+                }
+            }
+        },
+    }
+
+    query["_source"] = list(source_fields or _DEFAULT_SOURCE_FIELDS)
+
+    response = client.search(index=index_name, body=query, scroll=scroll_ttl)
+    scroll_id = response.get("_scroll_id")
+    results: List[Dict[str, Any]] = []
+
+    try:
+        while True:
+            hits = response.get("hits", {}).get("hits", [])
+            if not hits:
+                break
+
+            for hit in hits:
+                source = hit.get("_source", {})
+                source["doc_id"] = hit.get("_id")
+                results.append(source)
+
+            if not scroll_id:
+                break
+            response = client.scroll(scroll_id=scroll_id, scroll=scroll_ttl)
+            scroll_id = response.get("_scroll_id")
+    finally:
+        if scroll_id:
+            try:
+                client.clear_scroll(scroll_id=scroll_id)
+            except Exception:
+                logger.warning("Failed to clear OpenSearch scroll context", exc_info=True)
+
+    return results
+
+
+def fetch_error_logs(
+    opensearch_client: OpenSearchClient,
+    start: datetime,
+    end: datetime,
+    sites: Optional[Sequence[str]] = None,
+    limit: int = 5000,
+) -> List[ErrorLog]:
+    site_set: Set[str] = set(filter(None, sites or []))
+    if not site_set:
+        site_set = {"prod", "stage"}
+
+    logs: List[ErrorLog] = []
+    for site in site_set:
+        try:
+            site_logs = opensearch_client.get_error_logs(site, start, end, limit=limit)
+            logs.extend(site_logs)
+        except Exception:
+            logger.warning("Failed to fetch logs for site %s", site, exc_info=True)
+    return logs
+
+
+def sync_embedding_statuses(
+    jira_embedding_db: JiraIssueEmbeddingDB,
+    embedding_docs: List[Dict[str, Any]],
+    jira_by_key: Dict[str, JiraIssueSnapshot],
+) -> None:
+    index_name = jira_embedding_db.get_current_index_name()
+    client = jira_embedding_db.opensearch_connect
+    for doc in embedding_docs:
+        key = doc.get("key")
+        if not key or key not in jira_by_key:
+            continue
+        snapshot = jira_by_key[key]
+        jira_status = snapshot.status or "Unknown"
+        current_status = doc.get("status") or "Unknown"
+        payload = {"status": jira_status}
+        if snapshot.log_group:
+            payload["log_group"] = snapshot.log_group
+        if jira_status != current_status or (snapshot.log_group and doc.get("log_group") != snapshot.log_group):
+            try:
+                client.update(index=index_name, id=doc.get("doc_id"), body={"doc": {**payload}})
+                doc.update(payload)
+            except Exception:
+                logger.warning("Failed to update status/log_group for %s", key, exc_info=True)
+    embedding_docs_by_key = {doc.get("key"): doc for doc in embedding_docs}
+    for key in jira_by_key.keys():
+        if key in embedding_docs_by_key:
+            continue
+        # TODO: add to jira_embedding_db
+
+
+def merge_orphan_embedding_docs(
+    jira_embedding_db: JiraIssueEmbeddingDB,
+    embedding_docs: List[Dict[str, Any]],
+    now: Optional[datetime] = None,
+) -> None:
+    for doc in embedding_docs:
+        if doc.get("key"):
+            continue
+        _merge_single_orphan(jira_embedding_db, doc, now=now)
+
+
+def _merge_single_orphan(
+    jira_embedding_db: JiraIssueEmbeddingDB,
+    orphan: Dict[str, Any],
+    now: Optional[datetime] = None,
+) -> None:
+    summary = orphan.get("summary", "")
+    error_message = orphan.get("error_message", "")
+    status = orphan.get("status", "Unknown")
+    site = orphan.get("site") or "unknown"
+    timestamp = (now or datetime.now(timezone.utc)).isoformat()
+
+    placeholder = JiraIssueDetails(
+        key="",
+        summary=summary,
+        status=status,
+        parent_issue_key=None,
+        child_issue_keys=[],
+        error_message=error_message,
+        error_type=None,
+        traceback=None,
+        site=site,
+        request_id=None,
+        log_group=None,
+        count=None,
+        created=timestamp,
+        updated=timestamp,
+        description="",
+    )
+
+    embedding = jira_embedding_db._generate_embedding_from_data(placeholder)
+    if not embedding:
+        return
+
+    match = jira_embedding_db.find_similar_jira_issue(embedding, site)
+    if not match or not match.get("key"):
+        return
+
+    target_doc_id = match["doc_id"]
+    occurrences = orphan.get("occurrence_list", []) or []
+    for occ in occurrences:
+        try:
+            ts = occ.get("timestamp")
+            if ts:
+                jira_embedding_db.add_occurrence(
+                    source_doc_id=target_doc_id,
+                    doc_id=occ.get("doc_id", f"merged-{orphan.get('doc_id')}-{ts}"),
+                    timestamp=ts,
+                )
+        except Exception:
+            logger.warning("Failed to merge occurrence into %s", target_doc_id, exc_info=True)
+
+    try:
+        jira_embedding_db.delete_issue(orphan.get("doc_id"))
+    except Exception:
+        logger.warning("Failed to delete orphan embedding doc %s", orphan.get("doc_id"), exc_info=True)
+
+
+def update_embedding_with_error_logs(
+    jira_embedding_db: JiraIssueEmbeddingDB,
+    embedding_service: EmbeddingService,
+    logs: Sequence[ErrorLog],
+    similarity_threshold: float = 0.85,
+) -> None:
+    for log in logs:
+        embedding = build_log_embedding(embedding_service, log)
+        if embedding is None:
+            continue
+        match = jira_embedding_db.find_similar_jira_issue(
+            embedding, log.site, similarity_threshold=similarity_threshold
+        )
+        if not match or not match.get("key"):
+            continue
+        try:
+            jira_embedding_db.add_occurrence(
+                source_doc_id=match["doc_id"],
+                doc_id=log.message_id,
+                timestamp=log.timestamp.isoformat(),
+            )
+            jira_embedding_db.remove_duplicate_occurrences(match["doc_id"])
+        except Exception:
+            logger.warning("Failed to add occurrence for %s", match["key"], exc_info=True)
+
+
+def build_log_embedding(embedding_service: EmbeddingService, log: ErrorLog) -> Optional[List[float]]:
+    text = " ".join(filter(None, [log.error_message, log.error_type, log.traceback]))
+    if not text.strip():
+        return None
+    try:
+        return embedding_service.generate_embedding(text)
+    except Exception:
+        logger.warning("Failed to generate embedding for log %s", log.message_id, exc_info=True)
+        return None
+
+
+def filter_occurrence_timestamps(
+    occurrences: Iterable[Dict[str, Any]],
+    start_date: datetime,
+    end_date: datetime,
+) -> List[datetime]:
+    timestamps: List[datetime] = []
+    for occurrence in occurrences:
+        ts = occurrence.get("timestamp")
+        if not ts:
+            continue
+        parsed = parse_iso_datetime(ts) if isinstance(ts, str) else ts
+        if not isinstance(parsed, datetime):
+            continue
+        parsed = parsed.astimezone(timezone.utc)
+        if start_date <= parsed <= end_date:
+            timestamps.append(parsed)
+    return timestamps
