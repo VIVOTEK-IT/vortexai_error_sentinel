@@ -52,6 +52,10 @@ services:
       # Scheduling
       - CRON_SCHEDULE=${CRON_SCHEDULE}
       - TIMEZONE=${TIMEZONE}
+      # Email Configuration
+      - AWS_REGION=${AWS_REGION}
+      - EMAIL_SENDER=${EMAIL_SENDER}
+      - EMAIL_RECIPIENTS=${EMAIL_RECIPIENTS}
       # Disable ChromaDB telemetry
       - ANONYMIZED_TELEMETRY=${ANONYMIZED_TELEMETRY}
       - CHROMA_TELEMETRY=False

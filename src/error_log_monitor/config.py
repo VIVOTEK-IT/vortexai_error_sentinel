@@ -121,6 +121,19 @@ class VectorDBConfig:
 
 
 @dataclass
+class EmailConfig:
+    """Email configuration for AWS SES."""
+
+    aws_region: str = "us-east-1"
+    sender_email: str = "vortexai.dashboard@vortex.vivotek.com"
+    recipients: List[str] = None
+
+    def __post_init__(self):
+        if self.recipients is None:
+            self.recipients = []
+
+
+@dataclass
 class SystemConfig:
     """Main system configuration."""
 
@@ -148,6 +161,9 @@ class SystemConfig:
 
     # Vector Database Configuration
     vector_db: VectorDBConfig
+
+    # Email Configuration
+    email: EmailConfig
 
     # Processing Configuration
     batch_size: int = 10
@@ -251,6 +267,14 @@ def load_config() -> SystemConfig:
         embedding_model=os.getenv("RAG_EMBEDDING_MODEL", "text-embedding-3-small"),
     )
 
+    # Email configuration
+    email_recipients = os.getenv("EMAIL_RECIPIENTS", "yenjie.chen@vivotek.com")
+    email_config = EmailConfig(
+        aws_region=os.getenv("AWS_REGION", "ap-northeast-1"),
+        sender_email=os.getenv("EMAIL_SENDER", "vortexai.dashboard@vortex.vivotek.com"),
+        recipients=email_recipients.split(",") if email_recipients else [],
+    )
+
     return SystemConfig(
         openai_api_key=os.getenv("OPENAI_API_KEY", ""),
         models=models,
@@ -261,6 +285,7 @@ def load_config() -> SystemConfig:
         jira_embedding=jira_embedding_config,
         jira_custom_fields=jira_custom_fields_config,
         vector_db=vector_db_config,
+        email=email_config,
         batch_size=int(os.getenv("BATCH_SIZE", "10")),
         max_retries=int(os.getenv("MAX_RETRIES", "3")),
         retry_delay=int(os.getenv("RETRY_DELAY", "5")),

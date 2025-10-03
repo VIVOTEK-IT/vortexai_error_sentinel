@@ -1,4 +1,4 @@
-"""Weekly Report 3 generator based on Jira, embedding DB, and recent error logs."""
+"""Daily Report generator based on Jira, embedding DB, and recent error logs."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
-class WeeklyReportRow:
+class DailyReportRow:
     key: str
     site: str
     count: int
@@ -54,8 +54,8 @@ class JiraIssueSnapshot:
     updated: Optional[datetime]
 
 
-class WeeklyReportGenerator3:
-    """Generate weekly reports using Jira issues, embedding DB, and error logs."""
+class DailyReportGenerator:
+    """Generate daily reports using Jira issues, embedding DB, and error logs."""
 
     def __init__(self):
         self.config = load_config()
@@ -67,36 +67,37 @@ class WeeklyReportGenerator3:
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
-    def generate_weekly_report(self, end_date: Optional[datetime] = None) -> Dict[str, Any]:
+    def generate_daily_report(self, end_date: Optional[datetime] = None) -> Dict[str, Any]:
+        """Generate daily report for the past 24 hours."""
         end_date = (end_date or datetime.now(timezone.utc)).astimezone(timezone.utc)
-        a_week_ago = (end_date - timedelta(days=7)).astimezone(timezone.utc)
+        a_day_ago = (end_date - timedelta(hours=24)).astimezone(timezone.utc)
         six_months_ago = (end_date - timedelta(days=180)).astimezone(timezone.utc)
 
-        logger.info("Fetching Jira issues for the past six months")
-        jira_snapshots = self._fetch_recent_jira_issues(six_months_ago)
+        logger.info("Fetching Jira issues for the past 1 day")
+        jira_snapshots = self._fetch_recent_jira_issues(duration_in_days=1)
         jira_by_key = {issue.key: issue for issue in jira_snapshots if issue.key}
 
-        logger.info("Fetching embedding issues for the past six months")
-        weekly_embedding_docs = self._fetch_embedding_issues(a_week_ago, end_date)
+        logger.info("Fetching embedding issues for the past 24 hours")
+        daily_embedding_docs = self._fetch_embedding_issues(a_day_ago, end_date)
 
         logger.info("Synchronizing statuses and merging orphan embedding entries")
-        self._sync_embedding_statuses(weekly_embedding_docs, jira_by_key)
+        self._sync_embedding_statuses(daily_embedding_docs, jira_by_key)
 
-        logger.info("Fetching error logs for the past seven days")
-        error_logs_7_days = self._fetch_recent_error_logs(a_week_ago, end_date)
+        logger.info("Fetching error logs for the past 24 hours")
+        error_logs_24_hours = self._fetch_recent_error_logs(a_day_ago, end_date)
 
-        logger.info(f"Updating {len(error_logs_7_days)} embedding occurrences based on error logs")
-        self._update_embedding_with_error_logs(error_logs_7_days)
+        logger.info(f"Updating {len(error_logs_24_hours)} embedding occurrences based on error logs")
+        self._update_embedding_with_error_logs(error_logs_24_hours)
 
         logger.info("Refreshing embedding issues after updates")
-        weekly_embedding_docs = self._fetch_embedding_issues(a_week_ago, end_date)
-        self._merge_orphan_embedding_docs(weekly_embedding_docs)
-        weekly_embedding_docs = self._fetch_embedding_issues(a_week_ago, end_date)
-        site_reports = self._build_site_reports(weekly_embedding_docs, a_week_ago, end_date)
-        combined_path = generate_combined_excel_report(site_reports, a_week_ago, end_date, "weekly_report_3")
+        daily_embedding_docs = self._fetch_embedding_issues(a_day_ago, end_date)
+        self._merge_orphan_embedding_docs(daily_embedding_docs)
+        daily_embedding_docs = self._fetch_embedding_issues(a_day_ago, end_date)
+        site_reports = self._build_site_reports(daily_embedding_docs, a_day_ago, end_date)
+        combined_path = generate_combined_excel_report(site_reports, a_day_ago, end_date, "daily_report")
 
         return {
-            "start_date": a_week_ago,
+            "start_date": a_day_ago,
             "end_date": end_date,
             "site_reports": site_reports,
             "combined_excel_path": combined_path,
@@ -105,9 +106,9 @@ class WeeklyReportGenerator3:
     # ------------------------------------------------------------------
     # Data acquisition
     # ------------------------------------------------------------------
-    def _fetch_recent_jira_issues(self, since: datetime) -> List[JiraIssueData]:
+    def _fetch_recent_jira_issues(self, duration_in_days = 30) -> List[JiraIssueData]:
         all_issues: List[JiraIssueDetails] = self.jira_client.get_all_issues(
-            project_key=self.config.jira.project_key, duration_in_days=180
+            project_key=self.config.jira.project_key, duration_in_days=duration_in_days
         )
         return all_issues
 
@@ -167,7 +168,6 @@ class WeeklyReportGenerator3:
         return results
 
     def _fetch_recent_error_logs(self, start: datetime, end: datetime) -> List[ErrorLog]:
-
         sites = {"prod", "stage"}
         logs: List[ErrorLog] = []
         for site in sites:
@@ -307,7 +307,7 @@ class WeeklyReportGenerator3:
                 continue
 
             latest_update = max(recent_timestamps)
-            row = WeeklyReportRow(
+            row = DailyReportRow(
                 key=key,
                 site=site,
                 count=len(recent_timestamps),
@@ -320,10 +320,10 @@ class WeeklyReportGenerator3:
             reports[site]["issues"].append(row)
 
         for site, payload in reports.items():
-            rows: List[WeeklyReportRow] = payload["issues"]
+            rows: List[DailyReportRow] = payload["issues"]
             rows.sort(key=lambda r: r.latest_update, reverse=True)
-            payload["excel_path"] = generate_excel_report(site, rows, start_date, end_date, "weekly_report_3")
-            payload["html_path"] = generate_html_report(site, rows, start_date, end_date, "weekly_report_3")
+            payload["excel_path"] = generate_excel_report(site, rows, start_date, end_date, "daily_report")
+            payload["html_path"] = generate_html_report(site, rows, start_date, end_date, "daily_report")
             payload["count"] = len(rows)
         return reports
 
@@ -359,3 +359,4 @@ class WeeklyReportGenerator3:
             if start_date <= parsed <= end_date:
                 timestamps.append(parsed)
         return timestamps
+
