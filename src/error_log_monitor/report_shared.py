@@ -137,7 +137,7 @@ def fetch_error_logs(
     start: datetime,
     end: datetime,
     sites: Optional[Sequence[str]] = None,
-    limit: int = 5000,
+    page_size: int = 1000,
 ) -> List[ErrorLog]:
     site_set: Set[str] = set(filter(None, sites or []))
     if not site_set:
@@ -146,7 +146,7 @@ def fetch_error_logs(
     logs: List[ErrorLog] = []
     for site in site_set:
         try:
-            site_logs = opensearch_client.get_error_logs(site, start, end, limit=limit)
+            site_logs = opensearch_client.get_error_logs(site, start, end, page_size=page_size)
             logs.extend(site_logs)
         except Exception:
             logger.warning("Failed to fetch logs for site %s", site, exc_info=True)
@@ -602,7 +602,7 @@ def update_embedding_with_error_logs(
                             #     doc_id=log.message_id,
                             #     timestamp=log.timestamp.isoformat(),
                             # )
-                            resoponse = error_log_db.client.update(index=index, id=log.message_id, body={"doc": {"jira_reference": source_doc_id}})
+                            resoponse = error_log_db.client.update(index=log.index_name, id=log.message_id, body={"doc": {"jira_reference": source_doc_id}})
                         except Exception:
                             logger.warning("Failed to add occurrence for new issue %s", new_issue.key, exc_info=True)
                     source_doc = jira_embedding_db.opensearch_connect.get(

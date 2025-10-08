@@ -76,15 +76,15 @@ class OpenSearchClient:
     def get_es_conn(self):
         return self.client
 
-    def get_error_logs(self, site: str, start_date: datetime, end_date: datetime, limit: int = 1000) -> List[ErrorLog]:
+    def get_error_logs(self, site: str, start_date: datetime, end_date: datetime, page_size: int = 1000) -> List[ErrorLog]:
         """
-        Retrieve error logs from OpenSearch.
+        Retrieve error logs from OpenSearch using pagination.
 
         Args:
             site: Site name (dev, stage, prod)
             start_date: Start date for log retrieval
             end_date: End date for log retrieval
-            limit: Maximum number of logs to retrieve
+            page_size: Number of logs to retrieve per page (default: 1000)
 
         Returns:
             List of error log entries
@@ -104,18 +104,48 @@ class OpenSearchClient:
                     }
                 },
                 "sort": [{"timestamp": {"order": "desc"}}],
-                "size": limit,
+                "size": page_size,
             }
 
-            # Execute search
-            response = self.client.search(index=index_name, body=query)
-
+            # Execute search with scroll for pagination
+            response = self.client.search(index=index_name, body=query, scroll="2m")
+            scroll_id = response.get("_scroll_id")
+            
             # Parse results
             error_logs = []
+            
+            # Process first page
             for hit in response['hits']['hits']:
                 error_log = self._parse_log_entry(hit, site, index_name)
                 if error_log:
                     error_logs.append(error_log)
+
+            # Process remaining pages using scroll
+            while scroll_id:
+                try:
+                    response = self.client.scroll(scroll_id=scroll_id, scroll="2m")
+                    hits = response.get("hits", {}).get("hits", [])
+                    
+                    if not hits:
+                        break
+                    
+                    for hit in hits:
+                        error_log = self._parse_log_entry(hit, site, index_name)
+                        if error_log:
+                            error_logs.append(error_log)
+                    
+                    scroll_id = response.get("_scroll_id")
+                    
+                except Exception as e:
+                    logger.warning(f"Error during scroll pagination: {e}")
+                    break
+            
+            # Clear scroll context
+            if scroll_id:
+                try:
+                    self.client.clear_scroll(scroll_id=scroll_id)
+                except Exception as e:
+                    logger.warning(f"Failed to clear scroll context: {e}")
 
             logger.info(f"Retrieved {len(error_logs)} error logs from {index_name}")
             return error_logs

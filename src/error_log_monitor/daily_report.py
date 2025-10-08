@@ -48,7 +48,7 @@ class DailyReportRow:
         pass
 
 class DailyReportGenerator:
-    """Generate daily reports using Jira issues, embedding DB, and error logs."""
+    """Generate daily and weekly reports using Jira issues, embedding DB, and error logs."""
 
     def __init__(self):
         self.config = load_config()
@@ -138,6 +138,88 @@ class DailyReportGenerator:
 
         return {
             "start_date": a_day_ago,
+            "end_date": end_date,
+            "site_reports": site_reports,
+            "combined_excel_path": combined_path,
+            "timings": timings,
+        }
+
+    def generate_weekly_report(self, end_date: Optional[datetime] = None) -> Dict[str, Any]:
+        """Generate weekly report covering the most recent 7-day window."""
+        end_date = (end_date or datetime.now(timezone.utc)).astimezone(timezone.utc)
+        a_week_ago = (end_date - timedelta(days=7)).astimezone(timezone.utc)
+        a_month_ago = (end_date - timedelta(days=30)).astimezone(timezone.utc)
+        timings: Dict[str, float] = {}
+
+        logger.info("Fetching Jira issues for the past 90 days")
+        t0 = time.perf_counter()
+        jira_snapshots: List[JiraIssueDetails] = fetch_jira_snapshots(
+            self.jira_client,
+            project_key=self.config.jira.project_key,
+            duration_in_days=90,
+        )
+        timings["fetch_jira"] = round(time.perf_counter() - t0, 3)
+        jira_by_key = {issue.key: issue for issue in jira_snapshots if issue.key}
+        logger.warning(f"fetch_jira took {timings['fetch_jira']:.3f}s")
+
+        logger.info("Fetching embedding issues for the past 7 days")
+        t0 = time.perf_counter()
+        weekly_embedding_docs = fetch_embedding_docs(self.jira_embedding_db, a_month_ago, end_date)
+        timings["fetch_embeddings"] = round(time.perf_counter() - t0, 3)
+        logger.info(f"Found {len(weekly_embedding_docs)} embedding issues")
+        logger.info("Synchronizing statuses")
+        t0 = time.perf_counter()
+        sync_embedding_statuses(self.jira_embedding_db, weekly_embedding_docs, jira_by_key)
+        timings["sync_statuses"] = round(time.perf_counter() - t0, 3)
+        logger.warning(f"sync_statuses took {timings['sync_statuses']:.3f}s")
+
+        logger.info("Fetching error logs for the past 7 days")
+        t0 = time.perf_counter()
+        error_logs_7_days = fetch_error_logs(self.error_log_opensearch_client, a_week_ago, end_date)
+        timings["fetch_error_logs"] = round(time.perf_counter() - t0, 3)
+        logger.warning(f"fetch_error_logs took {timings['fetch_error_logs']:.3f}s")
+
+        logger.info(f"Updating {len(error_logs_7_days)} embedding occurrences based on error logs")
+        t0 = time.perf_counter()
+        update_embedding_with_error_logs(
+            self.jira_embedding_db, self.error_log_opensearch_client, self.embedding_service, error_logs_7_days
+        )
+        timings["update_with_error_logs"] = round(time.perf_counter() - t0, 3)
+        logger.warning(f"update_with_error_logs took {timings['update_with_error_logs']:.3f}s")
+
+        logger.info("Refreshing embedding issues after updates")
+        t0 = time.perf_counter()
+        weekly_embedding_docs = fetch_embedding_docs(self.jira_embedding_db, a_week_ago, end_date)
+        timings["refresh_embeddings_1"] = round(time.perf_counter() - t0, 3)
+        logger.warning(f"refresh_embeddings_1 took {timings['refresh_embeddings_1']:.3f}s")
+
+        t0 = time.perf_counter()
+        merge_orphan_embedding_docs(self.error_log_opensearch_client, self.jira_embedding_db, weekly_embedding_docs)
+        timings["merge_orphans"] = round(time.perf_counter() - t0, 3)
+        logger.warning(f"merge_orphans took {timings['merge_orphans']:.3f}s")
+
+        t0 = time.perf_counter()
+        weekly_embedding_docs = fetch_embedding_docs(self.jira_embedding_db, a_week_ago, end_date)
+        timings["refresh_embeddings_2"] = round(time.perf_counter() - t0, 3)
+        logger.warning(f"refresh_embeddings_2 took {timings['refresh_embeddings_2']:.3f}s")
+
+        logger.info("Fetching error logs again for the past 7 days")
+        t0 = time.perf_counter()
+        error_logs_7_days = fetch_error_logs(self.error_log_opensearch_client, a_week_ago, end_date)
+        timings["fetch_error_logs"] = round(time.perf_counter() - t0, 3)
+        
+        t0 = time.perf_counter()
+        site_reports = self._build_site_reports(error_logs_7_days, a_week_ago, end_date)
+        timings["build_site_reports"] = round(time.perf_counter() - t0, 3)
+        logger.warning(f"build_site_reports took {timings['build_site_reports']:.3f}s")
+
+        t0 = time.perf_counter()
+        combined_path = generate_combined_excel_report(site_reports, a_week_ago, end_date, "weekly_report")
+        timings["generate_combined_excel"] = round(time.perf_counter() - t0, 3)
+        logger.warning(f"generate_combined_excel took {timings['generate_combined_excel']:.3f}s")
+
+        return {
+            "start_date": a_week_ago,
             "end_date": end_date,
             "site_reports": site_reports,
             "combined_excel_path": combined_path,

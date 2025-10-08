@@ -31,19 +31,19 @@ if SRC_DIR not in sys.path:
 logger = logging.getLogger(__name__)
 
 
-def run_daily_report(send_email: bool = True) -> bool:
+def run_daily_report(send_email: bool = True, report_type: str = "daily") -> bool:
     """
-    Run daily report generation and optionally send email.
+    Run daily or weekly report generation and optionally send email.
 
     Args:
         send_email: Whether to send email notification
-        end_date: End date for the report (defaults to now)
+        report_type: Type of report to generate ("daily" or "weekly")
 
     Returns:
         True if successful, False otherwise
     """
     try:
-        logger.info("Starting daily report generation...")
+        logger.info(f"Starting {report_type} report generation...")
 
         # Load configuration
         config = load_config()
@@ -52,9 +52,13 @@ def run_daily_report(send_email: bool = True) -> bool:
         report_generator = DailyReportGenerator()
         email_service = EmailService(config.email) if send_email else None
 
-        # Generate daily report
-        logger.info("Generating daily report...")
-        report_data = report_generator.generate_daily_report()
+        # Generate report based on type
+        if report_type == "weekly":
+            logger.info("Generating weekly report...")
+            report_data = report_generator.generate_weekly_report()
+        else:
+            logger.info("Generating daily report...")
+            report_data = report_generator.generate_daily_report()
 
         # Calculate total issues across all sites
         total_issues = sum(
@@ -62,7 +66,8 @@ def run_daily_report(send_email: bool = True) -> bool:
         )
 
         # Print summary
-        print("\n📊 Daily Report Summary:")
+        report_title = "Weekly" if report_type == "weekly" else "Daily"
+        print(f"\n📊 {report_title} Report Summary:")
         print(
             f"  Period: {report_data['start_date'].strftime('%Y-%m-%d %H:%M')} to {report_data['end_date'].strftime('%Y-%m-%d %H:%M')}"
         )
@@ -100,34 +105,28 @@ def run_daily_report(send_email: bool = True) -> bool:
                 print("  ❌ Failed to send email notification")
                 return False
 
-        print("\n✅ Daily report completed successfully!")
+        print(f"\n✅ {report_title} report completed successfully!")
         return True
 
     except Exception as e:
-        logger.error(f"Daily report failed: {str(e)}", exc_info=True)
-        print(f"\n❌ Daily report failed: {str(e)}")
+        logger.error(f"{report_type.title()} report failed: {str(e)}", exc_info=True)
+        print(f"\n❌ {report_type.title()} report failed: {str(e)}")
         return False
 
 
 def main():
-    """Main function to run daily report."""
+    """Main function to run daily or weekly report."""
     import argparse
 
-    parser = argparse.ArgumentParser(description="Run daily error report")
+    parser = argparse.ArgumentParser(description="Run daily or weekly error report")
     parser.add_argument("--no-email", action="store_true", help="Generate report without sending email")
-    parser.add_argument("--end-date", type=str, help="(Deprecated) end date for the report; ignored")
+    parser.add_argument("--type", choices=["daily", "weekly"], default="daily", help="Type of report to generate (default: daily)")
 
     args = parser.parse_args()
-
-    # Parse end date if provided
-    if args.end_date:
-        logger.warning(
-            "--end-date is no longer supported and will be ignored. The report always covers the last 24 hours."
-        )
-
-    # Run daily report
+    # Run report
     success = run_daily_report(
         send_email=not args.no_email,
+        report_type=args.type,
     )
 
     return 0 if success else 1
