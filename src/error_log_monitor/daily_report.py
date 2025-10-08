@@ -248,9 +248,15 @@ class DailyReportGenerator:
             if not jira_reference:
                 logger.error(f"skip a issue due to empty jira_reference: {error_log.message_id}:{error_log.error_message}")
                 continue
-            jira_issue = self.jira_embedding_db.opensearch_connect.get(index=self.jira_embedding_db.get_current_index_name(), id=jira_reference)
+            try:
+                jira_issue = self.jira_embedding_db.opensearch_connect.get(index=self.jira_embedding_db.get_current_index_name(), id=jira_reference)
+            except:
+                logger.error(f"skip a issue due to error getting jira_issue: {jira_reference}. Remove jira_reference from error_log: {error_log.message_id}")
+                self.error_log_opensearch_client.client.update(index=error_log.index_name, id=error_log.message_id, body={"doc": {"jira_reference": None}})
+                continue
             if not jira_issue:
-                logger.error(f"skip a issue due to empty jira_issue: {jira_reference}")
+                logger.error(f"skip a issue due to empty jira_issue: {jira_reference}. Remove jira_reference from error_log: {error_log.message_id}")
+                # self.error_log_opensearch_client.client.update(index=error_log.index_name, id=error_log.message_id, body={"doc": {"jira_reference": None}})
                 continue
             jira_issue = jira_issue['_source']
             key = jira_issue.get("key", None)
@@ -264,7 +270,8 @@ class DailyReportGenerator:
                 collected_issues[site][key] = (jira_issue, [error_log.timestamp])
             else:
                 collected_issues[site][key][1].append(error_log.timestamp)
-            
+        logger.warning(f"collected_issues: {collected_issues}")
+        t0 = time.perf_counter()
         for site, issues in collected_issues.items():
             for key, (jira_issue, timestamps) in issues.items():
                 latest_update = max(timestamps)
@@ -279,13 +286,18 @@ class DailyReportGenerator:
                 )
                 reports.setdefault(site, {"issues": []})
                 reports[site]["issues"].append(row)
+        timings = round(time.perf_counter() - t0, 3)
+        logger.warning(f"generate_combined_excel took {timings:.3f}s")
 
+        t0 = time.perf_counter()
         for site, payload in reports.items():
             rows: List[DailyReportRow] = payload["issues"]
             rows.sort(key=lambda r: r.latest_update, reverse=True)
             payload["excel_path"] = generate_excel_report(site, rows, start_date, end_date, "daily_report")
             payload["html_path"] = generate_html_report(site, rows, start_date, end_date, "daily_report")
             payload["count"] = len(rows)
+        logger.warning(f"generate_combined_excel took {timings:.3f}s")
+        logger.info(f"send out reports: {payload}")
         return reports
 
     # ------------------------------------------------------------------
