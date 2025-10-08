@@ -11,7 +11,7 @@ from typing import Any, Dict, List, Optional
 from error_log_monitor.config import load_config
 from error_log_monitor.embedding_service import EmbeddingService
 from error_log_monitor.jira_issue_embedding_db import JiraIssueEmbeddingDB
-from error_log_monitor.jira_cloud_client import JiraCloudClient
+from error_log_monitor.jira_cloud_client import JiraCloudClient, JiraIssueDetails
 from error_log_monitor.opensearch_client import ErrorLog, OpenSearchClient
 from error_log_monitor.report_shared import (
     JiraIssueSnapshot,
@@ -47,17 +47,6 @@ class DailyReportRow:
         # Ensure this class implements the ReportRow protocol
         pass
 
-
-@dataclass
-class JiraIssueSnapshot:
-    key: str
-    status: str
-    site: Optional[str]
-    log_group: Optional[str]
-    summary: str
-    updated: Optional[datetime]
-
-
 class DailyReportGenerator:
     """Generate daily reports using Jira issues, embedding DB, and error logs."""
 
@@ -82,7 +71,7 @@ class DailyReportGenerator:
 
         logger.info("Fetching Jira issues for the past 90 days")
         t0 = time.perf_counter()
-        jira_snapshots = fetch_jira_snapshots(
+        jira_snapshots: List[JiraIssueDetails] = fetch_jira_snapshots(
             self.jira_client,
             project_key=self.config.jira.project_key,
             duration_in_days=90,
@@ -123,7 +112,7 @@ class DailyReportGenerator:
         logger.warning(f"refresh_embeddings_1 took {timings['refresh_embeddings_1']:.3f}s")
 
         t0 = time.perf_counter()
-        merge_orphan_embedding_docs(self.jira_embedding_db, daily_embedding_docs)
+        merge_orphan_embedding_docs(self.error_log_opensearch_client, self.jira_embedding_db, daily_embedding_docs)
         timings["merge_orphans"] = round(time.perf_counter() - t0, 3)
         logger.warning(f"merge_orphans took {timings['merge_orphans']:.3f}s")
 

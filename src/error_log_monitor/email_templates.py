@@ -4,6 +4,46 @@ from datetime import datetime
 from typing import Dict, List, Any
 
 from error_log_monitor.daily_report import DailyReportRow
+import html
+import re
+
+
+def clean_error_message_for_html(text: str) -> str:
+    """
+    Clean and escape error message text for safe use in HTML.
+    
+    This function:
+    1. Escapes HTML special characters
+    2. Removes or replaces problematic characters
+    3. Ensures the text is safe for HTML attributes and content
+    
+    Args:
+        text: The error message text to clean
+        
+    Returns:
+        Cleaned and escaped text safe for HTML
+    """
+    if not text:
+        return "No error message available"
+    
+    # First, escape HTML special characters
+    cleaned = html.escape(text)
+    
+    # Remove or replace other problematic characters
+    # Remove control characters (except newlines and tabs)
+    cleaned = re.sub(r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]', '', cleaned)
+    
+    # Replace multiple consecutive spaces with single space
+    cleaned = re.sub(r'\s+', ' ', cleaned)
+    
+    # Remove leading/trailing whitespace
+    cleaned = cleaned.strip()
+    
+    # If the text is empty after cleaning, return default message
+    if not cleaned:
+        return "No error message available"
+    
+    return cleaned
 
 
 def generate_daily_report_html_email(
@@ -275,22 +315,29 @@ def _generate_site_section(site: str, issues: List[DailyReportRow], start_date: 
     for issue in issues:
         status_class = _get_status_class(issue.status)
         
-        # Handle error message properly
-        error_msg = issue.error_message or "No error message available"
+        # Handle error message properly with cleaning
+        raw_error_msg = issue.error_message or "No error message available"
+        error_msg = clean_error_message_for_html(raw_error_msg)
+        
         if len(error_msg) > 97:
             display_msg = error_msg[:97] + "..."
         else:
             display_msg = error_msg
             
-        issue_link = f'<a href="https://vivotek.atlassian.net/browse/{issue.key}" target="_blank" class="jira-link">{issue.key}</a>'
+        # Clean other fields that might contain special characters
+        clean_status = clean_error_message_for_html(issue.status)
+        clean_log_group = clean_error_message_for_html(issue.log_group)
+        clean_issue_key = clean_error_message_for_html(issue.key)
+            
+        issue_link = f'<a href="https://vivotek.atlassian.net/browse/{clean_issue_key}" target="_blank" class="jira-link">{clean_issue_key}</a>'
         table_rows.append(
             f"""
             <tr>
                 <td><strong>{issue_link}</strong></td>
                 <td><span class="count-badge">{issue.count}</span></td>
                 <td class="error-message" title="{error_msg}">{display_msg}</td>
-                <td><span class="status-badge {status_class}">{issue.status}</span></td>
-                <td>{issue.log_group}</td>
+                <td><span class="status-badge {status_class}">{clean_status}</span></td>
+                <td>{clean_log_group}</td>
                 <td>{issue.latest_update.strftime('%Y-%m-%d %H:%M:%S')}</td>
             </tr>
         """

@@ -570,104 +570,104 @@ class JiraIssueEmbeddingDB:
             self.logger.error(f"Failed to find similar Jira issue: {e}")
             return None
 
-    def add_occurrence(self, source_doc_id: str, doc_id: str, timestamp: str) -> Dict[str, Any]:
-        """
-        Add an occurrence reference to a Jira issue.
+    # def add_occurrence(self, source_doc_id: str, doc_id: str, timestamp: str) -> Dict[str, Any]:
+    #     """
+    #     Add an occurrence reference to a Jira issue.
 
-        Args:
-            source_doc_id: Jira issue key
-            doc_id: Document ID from error log
-            timestamp: Timestamp of occurrence
+    #     Args:
+    #         source_doc_id: Jira issue key
+    #         doc_id: Document ID from error log
+    #         timestamp: Timestamp of occurrence
 
-        Returns:
-            OpenSearch response
-        """
-        try:
-            # TODO: check doc_id is not in source_doc_id's occurrence_list
-            source_doc = self.opensearch_connect.get(index=self.get_current_index_name(), id=source_doc_id)
-            if source_doc:
-                if '_source' in source_doc:
-                    source_doc = source_doc['_source']
-                if doc_id in source_doc.get("occurrence_list"):
-                    for occ in source_doc.get("occurrence_list"):
-                        if occ["doc_id"] == doc_id:
-                            self.logger.info(f"Doc {doc_id} already in {source_doc_id}'s occurrence_list, skipping")
-                            return {"result": "skipped", "reason": "already_exists", "id": source_doc_id}
+    #     Returns:
+    #         OpenSearch response
+    #     """
+    #     try:
+    #         # TODO: check doc_id is not in source_doc_id's occurrence_list
+    #         source_doc = self.opensearch_connect.get(index=self.get_current_index_name(), id=source_doc_id)
+    #         if source_doc:
+    #             if '_source' in source_doc:
+    #                 source_doc = source_doc['_source']
+    #             if doc_id in source_doc.get("occurrence_list"):
+    #                 for occ in source_doc.get("occurrence_list"):
+    #                     if occ["doc_id"] == doc_id:
+    #                         self.logger.info(f"Doc {doc_id} already in {source_doc_id}'s occurrence_list, skipping")
+    #                         return {"result": "skipped", "reason": "already_exists", "id": source_doc_id}
 
-            index_name = self.get_current_index_name()
+    #         index_name = self.get_current_index_name()
 
-            # Add occurrence to the nested occurrence_list
-            script = {
-                "script": {
-                    "source": (
-                        "if (ctx._source.occurrence_list == null) { "
-                        "ctx._source.occurrence_list = [] } "
-                        "ctx._source.occurrence_list.add(params.occurrence)"
-                    ),
-                    "params": {"occurrence": {"doc_id": doc_id, "timestamp": timestamp}},
-                }
-            }
+    #         # Add occurrence to the nested occurrence_list
+    #         script = {
+    #             "script": {
+    #                 "source": (
+    #                     "if (ctx._source.occurrence_list == null) { "
+    #                     "ctx._source.occurrence_list = [] } "
+    #                     "ctx._source.occurrence_list.add(params.occurrence)"
+    #                 ),
+    #                 "params": {"occurrence": {"doc_id": doc_id, "timestamp": timestamp}},
+    #             }
+    #         }
 
-            response = self.opensearch_connect.update(index=index_name, id=source_doc_id, body=script)
+    #         response = self.opensearch_connect.update(index=index_name, id=source_doc_id, body=script)
 
-            self.logger.debug(f"Added occurrence {doc_id} to Jira issue {source_doc_id}", exc_info=True)
-            return response
+    #         self.logger.debug(f"Added occurrence {doc_id} to Jira issue {source_doc_id}", exc_info=True)
+    #         return response
 
-        except Exception as e:
-            self.logger.error(f"Failed to add occurrence to {source_doc_id}: {e}", exc_info=True)
-            raise
+    #     except Exception as e:
+    #         self.logger.error(f"Failed to add occurrence to {source_doc_id}: {e}", exc_info=True)
+    #         raise
 
-    def remove_duplicate_occurrences(self, doc_key: str) -> bool:
-        """
-        Remove duplicate occurrences from a Jira issue.
-        """
-        try:
-            doc_data = self.opensearch_connect.get(index=self.get_current_index_name(), id=doc_key)
-            if not doc_data:
-                return False
-            if '_source' in doc_data:
-                doc_data = doc_data['_source']
-            occurrences = doc_data.get("occurrence_list", [])
-            occ_set = set()
-            occ_data = {}
-            for occ in occurrences:
-                occ_set.add(occ["doc_id"])
-                occ_data[occ["doc_id"]] = occ
-            if len(occurrences) != len(occ_set):
-                target = []
-                for occ_id in occ_set:
-                    target.append(occ_data[occ_id])
-                self.opensearch_connect.update(
-                    index=self.get_current_index_name(), id=doc_key, body={"doc": {"occurrence_list": target}}
-                )
+    # def remove_duplicate_occurrences(self, doc_key: str) -> bool:
+    #     """
+    #     Remove duplicate occurrences from a Jira issue.
+    #     """
+    #     try:
+    #         doc_data = self.opensearch_connect.get(index=self.get_current_index_name(), id=doc_key)
+    #         if not doc_data:
+    #             return False
+    #         if '_source' in doc_data:
+    #             doc_data = doc_data['_source']
+    #         occurrences = doc_data.get("occurrence_list", [])
+    #         occ_set = set()
+    #         occ_data = {}
+    #         for occ in occurrences:
+    #             occ_set.add(occ["doc_id"])
+    #             occ_data[occ["doc_id"]] = occ
+    #         if len(occurrences) != len(occ_set):
+    #             target = []
+    #             for occ_id in occ_set:
+    #                 target.append(occ_data[occ_id])
+    #             self.opensearch_connect.update(
+    #                 index=self.get_current_index_name(), id=doc_key, body={"doc": {"occurrence_list": target}}
+    #             )
 
-        except Exception as e:
-            self.logger.error(f"Failed to remove duplicate occurrences for {doc_key}: {e}")
-            return False
-        return True
+    #     except Exception as e:
+    #         self.logger.error(f"Failed to remove duplicate occurrences for {doc_key}: {e}")
+    #         return False
+    #     return True
 
-    def get_occurrences(self, jira_key: str) -> List[Dict[str, str]]:
-        """
-        Get all occurrences for a specific Jira issue.
+    # def get_occurrences(self, jira_key: str) -> List[Dict[str, str]]:
+    #     """
+    #     Get all occurrences for a specific Jira issue.
 
-        Args:
-            jira_key: Jira issue key
+    #     Args:
+    #         jira_key: Jira issue key
 
 
-        Returns:
-            List of occurrence data
-        """
-        try:
-            issue_data = self.get_issue_by_key(jira_key)
-            if not issue_data:
-                return []
+    #     Returns:
+    #         List of occurrence data
+    #     """
+    #     try:
+    #         issue_data = self.get_issue_by_key(jira_key)
+    #         if not issue_data:
+    #             return []
 
-            occurrences = issue_data.get("occurrence_list", [])
-            return [{"doc_id": occ.get("doc_id"), "timestamp": occ.get("timestamp")} for occ in occurrences]
+    #         occurrences = issue_data.get("occurrence_list", [])
+    #         return [{"doc_id": occ.get("doc_id"), "timestamp": occ.get("timestamp")} for occ in occurrences]
 
-        except Exception as e:
-            self.logger.error(f"Failed to get occurrences for {jira_key}: {e}")
-            return []
+    #     except Exception as e:
+    #         self.logger.error(f"Failed to get occurrences for {jira_key}: {e}")
+    #         return []
 
     def delete_issue(self, jira_key: str) -> Dict[str, Any]:
         """
