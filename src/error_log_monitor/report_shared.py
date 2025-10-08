@@ -7,10 +7,11 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Set
 
-from error_log_monitor.embedding_service import EmbeddingService
+from error_log_monitor.embedding_service import EmbeddingService, cosine_similarity
 from error_log_monitor.jira_cloud_client import JiraCloudClient, JiraIssueDetails
 from error_log_monitor.jira_issue_embedding_db import JiraIssueEmbeddingDB
 from error_log_monitor.opensearch_client import ErrorLog, OpenSearchClient
+
 
 logger = logging.getLogger(__name__)
 
@@ -52,11 +53,11 @@ def fetch_jira_snapshots(
     project_key: Optional[str],
     since: Optional[datetime] = None,
     duration_in_days: Optional[int] = None,
-) -> List[JiraIssueSnapshot]:
+) -> List[JiraIssueDetails]:
     raw_issues: List[JiraIssueDetails] = jira_client.get_all_issues(
         project_key=project_key, duration_in_days=duration_in_days
     )
-    snapshots: List[JiraIssueSnapshot] = []
+    results: List[JiraIssueDetails] = []
     for issue in raw_issues:
         key = getattr(issue, "key", None)
         if not key:
@@ -66,17 +67,13 @@ def fetch_jira_snapshots(
         reference = updated_dt or created_dt
         if since and reference and reference < since:
             continue
-        snapshots.append(
-            JiraIssueSnapshot(
-                key=key,
-                status=getattr(issue, "status", "Unknown") or "Unknown",
-                site=getattr(issue, "site", None),
-                log_group=getattr(issue, "log_group", None),
-                summary=getattr(issue, "summary", ""),
-                updated=reference,
-            )
-        )
-    return snapshots
+        # Normalize updated/created back to ISO strings on the object if needed
+        if updated_dt:
+            issue.updated = updated_dt.isoformat()
+        if created_dt:
+            issue.created = created_dt.isoformat()
+        results.append(issue)
+    return results
 
 
 def fetch_embedding_docs(
@@ -159,8 +156,8 @@ def sync_embedding_statuses(
     embedding_docs: List[Dict[str, Any]],
     jira_by_key: Dict[str, JiraIssueSnapshot],
 ) -> None:
+
     index_name = jira_embedding_db.get_current_index_name()
-    client = jira_embedding_db.opensearch_connect
     for doc in embedding_docs:
         key = doc.get("key")
         if not key or key not in jira_by_key:
@@ -173,15 +170,33 @@ def sync_embedding_statuses(
             payload["log_group"] = snapshot.log_group
         if jira_status != current_status or (snapshot.log_group and doc.get("log_group") != snapshot.log_group):
             try:
-                client.update(index=index_name, id=doc.get("doc_id"), body={"doc": {**payload}})
+                jira_embedding_db.client.update(index=index_name, id=doc.get("doc_id"), body={"doc": {**payload}})
                 doc.update(payload)
             except Exception:
                 logger.warning("Failed to update status/log_group for %s", key, exc_info=True)
-    embedding_docs_by_key = {doc.get("key"): doc for doc in embedding_docs}
-    for key in jira_by_key.keys():
-        if key in embedding_docs_by_key:
-            continue
-        # TODO: add to jira_embedding_db
+
+    # # Update Jira issues that are not in the Jira
+    # for embedding_doc in embedding_docs:
+    #     issue = jira_embedding_db.find_jira_issue_by_key(embedding_doc.get("key"))
+    #     if not issue:
+    #         jira_data = JiraIssueDetails(
+    #             key=embedding_doc.get("key"),
+    #             summary=embedding_doc.get("summary", ""),
+    #             status="Pending",
+    #             site=embedding_doc.get("site", "unknown"),
+    #             log_group=embedding_doc.get("log_group", None),
+    #             error_message=embedding_doc.get("error_message", ""),
+    #             error_type=embedding_doc.get("error_type", ""),
+    #             traceback=embedding_doc.get("traceback", ""),
+    #             request_id=embedding_doc.get("request_id", ""),
+    #             count=embedding_doc.get("count", None),
+    #             created=embedding_doc.get("created", None),
+    #             updated=embedding_doc.get("updated", None),
+    #             description=embedding_doc.get("description", ""),
+    #             is_parent=True,
+    #             not_commit_to_jira=False,
+    #         )
+    #         jira_embedding_db.add_jira_issue(jira_data)
 
 
 def merge_orphan_embedding_docs(
@@ -258,24 +273,113 @@ def update_embedding_with_error_logs(
     logs: Sequence[ErrorLog],
     similarity_threshold: float = 0.85,
 ) -> None:
+    # Step 1: Precompute all embeddings
+    enriched: List[Dict[str, Any]] = []
     for log in logs:
-        embedding = build_log_embedding(embedding_service, log)
-        if embedding is None:
+        emb = build_log_embedding(embedding_service, log)
+        if emb is None:
             continue
-        match = jira_embedding_db.find_similar_jira_issue(
-            embedding, log.site, similarity_threshold=similarity_threshold
-        )
-        if not match or not match.get("key"):
-            continue
-        try:
-            jira_embedding_db.add_occurrence(
-                source_doc_id=match["doc_id"],
-                doc_id=log.message_id,
-                timestamp=log.timestamp.isoformat(),
-            )
-            jira_embedding_db.remove_duplicate_occurrences(match["doc_id"])
-        except Exception:
-            logger.warning("Failed to add occurrence for %s", match["key"], exc_info=True)
+        enriched.append({"log": log, "embedding": emb})
+
+    if not enriched:
+        return
+
+    # Step 2: Local merge by cosine similarity (greedy clustering), grouped by site
+
+    clusters: List[Dict[str, Any]] = []
+    by_site: Dict[str, List[Dict[str, Any]]] = {}
+    for item in enriched:
+        by_site.setdefault(item["log"].site or "unknown", []).append(item)
+
+    local_threshold = max(0.88, similarity_threshold)
+
+    for site, items in by_site.items():
+        used: set = set()
+        for i, item in enumerate(items):
+            if i in used:
+                continue
+            base = item
+            cluster = {"site": site, "embedding": base["embedding"], "members": [base["log"]]}
+            used.add(i)
+            for j in range(i + 1, len(items)):
+                if j in used:
+                    continue
+                other = items[j]
+                sim = cosine_similarity(base["embedding"], other["embedding"])
+                if sim >= local_threshold:
+                    cluster["members"].append(other["log"])
+                    used.add(j)
+            clusters.append(cluster)
+
+    if not clusters:
+        return
+
+    # Step 3: For each cluster, try to update existing issue; if none, create a new one from representative
+    for cluster in clusters:
+        site = cluster["site"]
+        # Representative is the first member
+        rep_log: ErrorLog = cluster["members"][0]
+        rep_emb: List[float] = cluster["embedding"]
+
+        match = jira_embedding_db.find_similar_jira_issue(rep_emb, site, similarity_threshold=similarity_threshold)
+        if match and match.get("key"):
+            for log in cluster["members"]:
+                try:
+                    jira_embedding_db.add_occurrence(
+                        source_doc_id=match["doc_id"],
+                        doc_id=log.message_id,
+                        timestamp=log.timestamp.isoformat(),
+                    )
+                except Exception:
+                    logger.warning("Failed to add occurrence for %s", match.get("key"), exc_info=True)
+            try:
+                jira_embedding_db.remove_duplicate_occurrences(match["doc_id"])
+            except Exception:
+                logger.warning("Failed to dedupe occurrences for %s", match.get("key"), exc_info=True)
+        else:
+            # Create new embedding issue from representative log
+            try:
+                new_issue = jira_embedding_db._create_jira_issue_from_error_log(rep_log, site)
+                if new_issue:
+                    result = jira_embedding_db.add_jira_issue_from_jira_issue_detail(new_issue)
+                    source_doc_id = None
+                    similar_issue_key = None
+                    if result.get('result') == 'added':
+                        source_doc_id = result.get("id", None)
+                    elif result.get('result') == 'skipped':
+                        similar_issue_key = result.get("similar_issue_key", None)
+                        similar_issue = jira_embedding_db.find_jira_issue_by_key(similar_issue_key)
+                        if similar_issue:
+                            source_doc_id = similar_issue.get("doc_id", None)
+                    # Add occurrences for all logs in the cluster
+                    for log in cluster["members"]:
+                        try:
+                            jira_embedding_db.add_occurrence(
+                                source_doc_id=source_doc_id,
+                                doc_id=log.message_id,
+                                timestamp=log.timestamp.isoformat(),
+                            )
+                        except Exception:
+                            logger.warning("Failed to add occurrence for new issue %s", new_issue.key, exc_info=True)
+                    source_doc = jira_embedding_db.opensearch_connect.get(
+                        index=jira_embedding_db.get_current_index_name(), id=source_doc_id
+                    )
+                    if '_source' in source_doc:
+                        source_doc = source_doc['_source']
+                    if not source_doc.get("key", None):
+                        jira_cloud_client = JiraCloudClient(jira_embedding_db.config.jira)
+                        jira_issue_key = jira_cloud_client.create_jira_issue(source_doc)
+                        source_doc["key"] = jira_issue_key
+                        jira_embedding_db.client.update(
+                            index=jira_embedding_db.get_current_index_name(), id=source_doc_id, body={"doc": source_doc}
+                        )
+
+            except Exception:
+                logger.warning(
+                    "Failed to create new issue from representative log %s",
+                    getattr(rep_log, "message_id", ""),
+                    exc_info=True,
+                )
 
 
 def build_log_embedding(embedding_service: EmbeddingService, log: ErrorLog) -> Optional[List[float]]:

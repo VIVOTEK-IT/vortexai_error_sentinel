@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from typing import Dict, List, Optional
 from enum import Enum
 
+from jira import JIRA
+
 logger = logging.getLogger(__name__)
 
 
@@ -73,6 +75,53 @@ class JiraConfig:
     username: str = ""
     api_token: str = ""
     project_key: str = ""
+
+    def get_jira_field_index(self):
+        field_id_index = {}
+        reverse_field_id_index = {}
+        remove_dummy_issue = False
+        jira = JIRA(
+            server=self.server_url,
+            basic_auth=(self.username, self.api_token),
+        )
+        jql = f'project = {self.project_key} AND issuetype = Task ORDER BY created DESC'
+        logger.info(f"📋 JQL: {jql}")
+        issues = jira.search_issues(jql, maxResults=1)
+        try:
+            issue = issues[0]
+        except Exception as e:
+            remove_dummy_issue = True
+            issue = jira.create_issue(
+                fields={
+                    'project': {'key': self.project_key},
+                    'summary': 'Dummy Issue',
+                    'issuetype': {'name': 'Task'},
+                }
+            )
+            logger.error(f"Failed to get Jira field index: {e}", exc_info=True)
+        fields = jira.fields()
+        all_fields = {}
+        for field in fields:
+            if field['id'].startswith('customfield_'):
+                all_fields[field['id']] = field['name']
+
+        for field_id, val in issue.raw['fields'].items():
+            if field_id.startswith('customfield_') and field_id in all_fields.keys():
+                field_name = all_fields[field_id]
+                field_id_index[field_name] = field_id
+                reverse_field_id_index[field_id] = field_name
+                logger.info(f"✅ {field_name}:{field_name} added to field_id_index")
+        if remove_dummy_issue:
+            jira._session.delete(f"{jira._get_url('issue')}/{issue.key}")
+            logger.info(f"✅ dummy issue removed")
+        return field_id_index, reverse_field_id_index
+
+    def __init__(self, server_url: str = None, username: str = None, api_token: str = None, project_key: str = None):
+        self.server_url = server_url
+        self.username = username
+        self.api_token = api_token
+        self.project_key = project_key
+        self.field_id_index, self.reverse_field_id_index = self.get_jira_field_index()
 
 
 @dataclass

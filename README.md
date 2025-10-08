@@ -252,8 +252,8 @@ from error_log_monitor.jira_issue_embedding_db import JiraIssueEmbeddingDB
 # Initialize database
 db = JiraIssueEmbeddingDB(embedding_service, config)
 
-# Add Jira issue
-db.add_jira_issue(jira_issue_data, error_log_data)
+# # Add Jira issue
+# db.add_jira_issue(jira_issue_data, error_log_data)
 
 # Find similar issues
 similar_issues = db.find_similar_jira_issue(error_log_embedding, site)

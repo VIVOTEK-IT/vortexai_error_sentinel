@@ -15,53 +15,66 @@ except ImportError:
     JIRA_AVAILABLE = False
     JIRA = None
 
-from error_log_monitor.config import JiraConfig, load_config
+from error_log_monitor.config import JiraConfig, SystemConfig
 
 logger = logging.getLogger(__name__)
 
 
-def get_jira_field_index(jira=None):
-    config = load_config()
-    field_id_index = {}
-    """Get Jira field index."""
-    field_id_index = {}
-    reverse_field_id_index = {}
-    remove_dummy_issue = False
-    if not jira:
-        jira = JIRA(
-            server=config.jira.server_url,
-            basic_auth=(config.jira.username, config.jira.api_token),
-        )
-    jql = f'project = {config.jira.project_key} AND issuetype = Task ORDER BY created DESC'
-    logger.info(f"📋 JQL: {jql}")
-    issues = jira.search_issues(jql, maxResults=1)
-    try:
-        issue = issues[0]
-    except Exception:
-        remove_dummy_issue = True
-        issue = jira.create_issue(
-            fields={
-                'project': {'key': config.jira.project_key},
-                'summary': 'Dummy Issue',
-                'issuetype': {'name': 'Task'},
-            }
-        )
-    fields = jira.fields()
-    all_fields = {}
-    for field in fields:
-        if field['id'].startswith('customfield_'):
-            all_fields[field['id']] = field['name']
+def format_traceback_for_jira_rtf(raw_text: str) -> str:
+    """
+    將 raw traceback（以分號分隔）格式化為 Jira RTF 欄位可用的 Markdown 文字，
+    使用三個大於號（{code}）包起來，適合貼入 Jira 支援 RTF 的段落欄位。
+    """
+    lines = raw_text.strip().split(";")
+    formatted = []
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+        if line.startswith("File "):
+            formatted.append("")  # 空行斷段
+            formatted.append(line)
+        else:
+            formatted.append("    " + line)
 
-    for field_id, val in issue.raw['fields'].items():
-        if field_id.startswith('customfield_') and field_id in all_fields.keys():
-            field_name = all_fields[field_id]
-            field_id_index[field_name] = field_id
-            reverse_field_id_index[field_id] = field_name
-            logging.info(f"✅ {field_name}:{field_name} added to field_id_index")
-    if remove_dummy_issue:
-        jira._session.delete(f"{jira._get_url('issue')}/{issue.key}")
-        logging.info("✅ dummy issue removed")
-    return field_id_index, reverse_field_id_index
+    formatted_text = "\n".join(formatted)
+
+    # 包裝成 Jira Wiki RTF code block 格式
+    return "{code:python}\n" + formatted_text + "\n{code}"
+
+
+def add_custom_fields(config: JiraConfig, jira_issue_dict: dict, issue_dict: dict):
+
+    field_id_index = config.field_id_index
+    for key_name in jira_issue_dict.keys():
+        if key_name in field_id_index.keys():
+            field_id = field_id_index[key_name]
+            if jira_issue_dict[key_name] is not None:
+                issue_dict[field_id] = jira_issue_dict[key_name]
+                # logging.info(f"✅ {field_id}:{key_name}:{jira_issue_dict[key_name]} added to issue_dict")
+                if key_name == "traceback":
+                    issue_dict[field_id] = format_traceback_for_jira_rtf(jira_issue_dict[key_name])
+
+
+def get_region_by_site(site: str) -> str:
+    if site == 'dev':
+        return 'ap-northeast-1'
+    elif site == 'stage':
+        return 'us-west-2'
+    elif site == 'prod':
+        return 'us-west-2'
+    return 'ap-northeast-1'
+
+
+def clean_summary_for_creation(summary: str) -> str:
+    # 移除控制字符
+    cleaned = summary.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
+
+    # 限制长度
+    if len(cleaned) > 255:
+        cleaned = cleaned[:252] + "..."
+
+    return cleaned.strip()
 
 
 @dataclass
@@ -83,10 +96,19 @@ class JiraIssueDetails:
     created: Optional[str] = None
     updated: Optional[str] = None
     description: Optional[str] = None
+    is_parent: bool = True
+    not_commit_to_jira: bool = False
 
     def __post_init__(self):
         if self.child_issue_keys is None:
             self.child_issue_keys = []
+
+
+def extract_summary_from_issue(issue: JiraIssueDetails) -> str:
+    summary = issue.error_message[:100] if issue.error_message else "Unknown Error"
+    issue_time = issue.issue_time.strftime("%Y%m%d")
+    summary = f"[{issue_time}][{issue.site}] - {summary}"
+    return summary
 
 
 class JiraCloudClient:
@@ -95,10 +117,15 @@ class JiraCloudClient:
     def __init__(self, config: JiraConfig):
         """Initialize Jira Cloud client."""
         self.config = config
+        if not self.config:
+            self.config = config.load_config().jira
+
         self.client = None
         self._connect()
 
     def _connect(self):
+        if isinstance(self.config, SystemConfig):
+            self.config = self.config.jira
         """Establish connection to Jira Cloud."""
         try:
             if not JIRA_AVAILABLE:
@@ -113,7 +140,7 @@ class JiraCloudClient:
             logger.info(f"Connected to Jira Cloud at {self.config.server_url}")
 
         except Exception as e:
-            logger.error(f"Error connecting to Jira Cloud: {e}")
+            logger.error(f"Error connecting to Jira Cloud: {e}", exc_info=True)
             self.client = None
 
     def get_issue_details(
@@ -275,7 +302,7 @@ class JiraCloudClient:
             logger.info(f"Searching for Jira issues with JQL: {jql} (max: {max_results}, page_size: {page_size})")
 
             # Get custom field mapping
-            field_id_index, _ = get_jira_field_index(self.client)
+
             issue_details = []
             nextPageToken = None
             total_fetched = 0
@@ -337,9 +364,9 @@ class JiraCloudClient:
                         log_group = None
                         count = None
 
-                        if field_id_index:
+                        if self.config.field_id_index:
                             # Map custom field IDs to field names
-                            reverse_mapping = {v: k for k, v in field_id_index.items()}
+                            reverse_mapping = {v: k for k, v in self.config.field_id_index.items()}
 
                             for field_id, field_name in reverse_mapping.items():
                                 field_value = getattr(issue.fields, field_id, None)
@@ -448,3 +475,92 @@ class JiraCloudClient:
         except Exception as e:
             logger.error(f"Jira Cloud connection test failed: {e}")
             return False
+
+    def create_jira_issue(self, jira_issue: dict, title: str | None = None):
+        """Create a new Jira issue in the configured project from JiraIssueDetails.
+
+        Returns the created issue key (e.g., "PROJ-123").
+        """
+        try:
+            if not self.client:
+                raise RuntimeError("Jira client not initialized")
+
+            project_key = self.config.project_key
+
+            if jira_issue.get("created", None) is None:
+                logger.error("issue_time is None, cannot create Jira issue", exc_info=True)
+                raise ValueError("issue_time cannot be None")
+
+            base_summary = (
+                title
+                or jira_issue.get('summary', None)
+                or jira_issue.get('error_message', None)
+                or "Auto-created from logs"
+            )
+            if jira_issue.get('request_id', None):
+                issue_time = jira_issue.get('created', None)
+                start = (
+                    (issue_time - datetime.timedelta(hours=12)).strftime("%Y-%m-%dT%H:%M:%S.000Z").replace(":", "*3a")
+                )
+                end = (issue_time + datetime.timedelta(hours=12)).strftime("%Y-%m-%dT%H:%M:%S.000Z").replace(":", "*3a")
+                region = get_region_by_site(jira_issue.site) if jira_issue.site else "us-east-1"
+                timezone = "UTC"
+                request_id = jira_issue.get('request_id', None)
+                log_group = jira_issue.get('log_group', '')
+                if log_group:
+                    log_group = log_group.replace("/", "*2f")
+
+                jira_issue['full_log_url'] = (
+                    f"""[https://{region}.console.aws.amazon.com/cloudwatch/home?region={region}#logsV2:logs-insights$3FqueryDetail$3D~(end~'{end}~start~'{start}~timeType~'ABSOLUTE~tz~'{timezone}~editorString~'fields*20*40timestamp*2c*20*40message*2c*20*40logStream*2c*20*40log*2c*20strcontains*28*40message*2c*20*27{request_id}*27*29*20as*20unf*0a*7c*20filter*20unf*20*3d*201*0a*7c*20sort*20*40timestamp*20asc*0a*7c*20limit*209999~source~(~'{log_group})~lang~'CWLI\)]"""
+                )
+            # Jira summary has length limits; trim conservatively
+            summary = (base_summary or "Auto-created from logs").strip()
+            if len(summary) > 255:
+                summary = summary[:252] + "..."
+
+            # Description: prefer description, else compose from available fields
+            description = jira_issue.get('description', '')
+            if not description:
+                parts = []
+                if jira_issue.get('error_message', None):
+                    parts.append(f"Error: {jira_issue.get('error_message', None)}")
+                if jira_issue.get('error_type', None):
+                    parts.append(f"Type: {jira_issue.get('error_type', None)}")
+                if jira_issue.get('traceback', None):
+                    tb = jira_issue.get('traceback', None)
+                    if len(tb) > 4000:
+                        tb = tb[:3997] + "..."
+                    parts.append(f"Traceback:\n{tb}")
+                description = "\n\n".join(parts) or "Created by automation"
+
+            labels = []
+            if jira_issue.get('site', None):
+                labels.append(str(jira_issue.get('site', None)))
+            if jira_issue.get('request_id', None):
+                labels.append(str(jira_issue.get('request_id', None)))
+            if jira_issue.get('log_group', None):
+                labels.append(str(jira_issue.get('log_group', None)))
+
+            issue_dict = {
+                "project": {"key": project_key},
+                "summary": summary,
+                "issuetype": {"name": "Task"},
+                "description": description,
+            }
+            if labels:
+                issue_dict["labels"] = labels
+
+            add_custom_fields(self.config, jira_issue, issue_dict)
+
+            new_issue = self.client.create_issue(fields=issue_dict)
+            logger.info(
+                f"✅ issue created! issue key: {new_issue.key} ; issue url: {self.config.server_url}/browse/{new_issue.key}"
+            )
+            # Reflect created key/status back into the details object
+            jira_issue['key'] = new_issue.key
+
+            return new_issue.key
+
+        except Exception as e:
+            logger.error(f"Failed to create Jira issue: {e}", exc_info=True)
+            raise

@@ -13,7 +13,7 @@ import pandas as pd
 from error_log_monitor.config import load_config
 from error_log_monitor.embedding_service import EmbeddingService
 from error_log_monitor.jira_issue_embedding_db import JiraIssueEmbeddingDB
-from error_log_monitor.jira_cloud_client import JiraCloudClient
+from error_log_monitor.jira_cloud_client import JiraCloudClient, JiraIssueDetails
 from error_log_monitor.opensearch_client import OpenSearchClient
 from error_log_monitor.report_shared import (
     JiraIssueSnapshot,
@@ -133,7 +133,7 @@ class WeeklyReportGenerator3:
     # Cleanup and synchronization
     # ------------------------------------------------------------------
     def _sync_embedding_statuses(
-        self, embedding_docs: List[Dict[str, Any]], jira_by_key: Dict[str, JiraIssueSnapshot]
+        self, embedding_docs: List[Dict[str, Any]], jira_by_key: Dict[str, JiraIssueDetails]
     ) -> None:
         sync_embedding_statuses(self.jira_embedding_db, embedding_docs, jira_by_key)
 

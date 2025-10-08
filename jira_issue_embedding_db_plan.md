@@ -88,7 +88,7 @@ Error Logs → Embedding Calculation → Similarity Search → Correlation
 
 #### 2.2 CRUD Operations
 - [ ] **Basic CRUD methods**
-  - `add_jira_issue(jira_issue_data, error_log_data=None)`
+  
   - `get_issue_by_key(jira_key, year=None)`
   - `update_issue(jira_key, update_data, year=None)`
   - `delete_issue(jira_key, year=None)`

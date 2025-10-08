@@ -152,44 +152,8 @@ class TestJiraIssueEmbeddingDB:
         assert result["existing"] is True
         mock_opensearch_client.client.indices.create.assert_not_called()
 
-    def test_add_jira_issue(
-        self, jira_embedding_db, sample_jira_issue_data, mock_opensearch_client, mock_embedding_service
-    ):
-        """Test adding Jira issue to database."""
-        # Mock embedding service response (now returns normalized vectors)
-        normalized_embedding = [0.1] * 1536
-        mock_embedding_service.generate_embedding.return_value = normalized_embedding
-        mock_embedding_service.validate_unit_vector.return_value = True
-        mock_opensearch_client.client.index.return_value = {"result": "created"}
 
-        result = jira_embedding_db.add_jira_issue(sample_jira_issue_data)
-
-        assert result["result"] == "created"
-        mock_embedding_service.generate_embedding.assert_called_once()
-        mock_embedding_service.validate_unit_vector.assert_called_once()
-        mock_opensearch_client.client.index.assert_called_once()
-
-    def test_add_jira_issue_with_error_log(
-        self,
-        jira_embedding_db,
-        sample_jira_issue_data,
-        sample_error_log,
-        mock_opensearch_client,
-        mock_embedding_service,
-    ):
-        """Test adding Jira issue with error log data."""
-        # Mock embedding service response (now returns normalized vectors)
-        normalized_embedding = [0.1] * 1536
-        mock_embedding_service.generate_embedding.return_value = normalized_embedding
-        mock_embedding_service.validate_unit_vector.return_value = True
-        mock_opensearch_client.client.index.return_value = {"result": "created"}
-
-        result = jira_embedding_db.add_jira_issue(sample_jira_issue_data, sample_error_log)
-
-        assert result["result"] == "created"
-        mock_embedding_service.generate_embedding.assert_called_once()
-        mock_embedding_service.validate_unit_vector.assert_called_once()
-        mock_opensearch_client.client.index.assert_called_once()
+  
 
     def test_find_similar_jira_issue(self, jira_embedding_db, mock_opensearch_client, mock_embedding_service):
         """Test finding similar Jira issues."""
@@ -365,13 +329,7 @@ class TestJiraIssueEmbeddingDB:
         mock_opensearch_client.client.search.assert_called_once()
     
 
-    def test_error_handling_in_add_jira_issue(self, jira_embedding_db, sample_jira_issue_data, mock_embedding_service):
-        """Test error handling in add_jira_issue method."""
-        # Mock embedding service to raise exception
-        mock_embedding_service.generate_embedding.side_effect = Exception("Embedding service error")
 
-        with pytest.raises(Exception, match="Embedding service error"):
-            jira_embedding_db.add_jira_issue(sample_jira_issue_data)
 
     def test_error_handling_in_find_similar_jira_issue(self, jira_embedding_db, mock_opensearch_client):
         """Test error handling in find_similar_jira_issue method."""

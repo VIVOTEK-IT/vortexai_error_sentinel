@@ -409,7 +409,7 @@ def initialize_database(
             # Initialize clients
             logger.info("🔌 Initializing clients...")
 
-            jira_cloud_client = JiraCloudClient(config.jira)
+            jira_cloud_client = JiraCloudClient(config)
 
             # Fetch Jira issues
             logger.info("📝 Fetching Jira issues from API...")

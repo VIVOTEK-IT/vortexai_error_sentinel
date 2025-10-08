@@ -199,9 +199,6 @@ class JiraIssueEmbeddingDB:
     def daily_update(self, error_logs_by_site):
         """Daily update process for new error logs."""
         
-    def add_jira_issue(self, jira_issue_data, error_log_data=None):
-        """Add a new Jira issue with embedding to the database."""
-        
     def find_similar_jira_issue(self, error_log_embedding, site, similarity_threshold=0.85):
         """Find similar Jira issue for an error log (parent issues only)."""
         
@@ -256,8 +253,8 @@ Daily update process for new error logs.
 2. Find similar Jira issues (parent issues only)
 3. Add occurrences or create new issues
 
-#### `add_jira_issue(jira_issue_data, error_log_data=None)`
-Add a new Jira issue with embedding to the database.
+<!-- #### `add_jira_issue(jira_issue_data, error_log_data=None)`
+Add a new Jira issue with embedding to the database. -->
 
 **Returns:** Created document response
 

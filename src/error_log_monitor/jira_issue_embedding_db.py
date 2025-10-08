@@ -12,7 +12,8 @@ from opensearchpy.client import OpenSearch
 from error_log_monitor.config import SystemConfig, JiraEmbeddingConfig
 from error_log_monitor.opensearch_client import ErrorLog, connect_opensearch
 from error_log_monitor.embedding_service import EmbeddingService
-from error_log_monitor.jira_cloud_client import JiraIssueDetails
+from error_log_monitor.jira_cloud_client import JiraIssueDetails, JiraCloudClient
+
 
 logger = logging.getLogger(__name__)
 
@@ -101,9 +102,7 @@ class JiraIssueEmbeddingDB:
     def _update_custom_field_mapping(self) -> None:
         """Update custom field mapping from Jira Cloud."""
         try:
-            from error_log_monitor.jira_cloud_client import get_jira_field_index
-
-            field_id_index, reverse_field_id_index = get_jira_field_index()
+            field_id_index = self.config.JiraConfig.field_id_index
 
             # Filter only known fields
             known_fields = self.jira_custom_fields_config.known_fields
@@ -323,6 +322,20 @@ class JiraIssueEmbeddingDB:
                     "status",
                     "parent_issue_key",
                     "is_parent",
+                    "error_message",
+                    "error_type",
+                    "traceback",
+                    "site",
+                    "request_id",
+                    "log_group",
+                    "count",
+                    "created",
+                    "updated",
+                    "description",
+                    "is_parent",
+                    "not_commit_to_jira",
+                    "created_at",
+                    "updated_at",
                 ],
             }
             logger.info(f"Searching for Jira issue with key: {jira_key}")
@@ -337,6 +350,20 @@ class JiraIssueEmbeddingDB:
                     "status": source.get("status", ""),
                     "parent_issue_key": source.get("parent_issue_key", ""),
                     "is_parent": source.get("is_parent", True),
+                    "error_message": source.get("error_message", ""),
+                    "error_type": source.get("error_type", ""),
+                    "traceback": source.get("traceback", ""),
+                    "site": source.get("site", ""),
+                    "request_id": source.get("request_id", ""),
+                    "log_group": source.get("log_group", ""),
+                    "count": source.get("count", ""),
+                    "created": source.get("created", ""),
+                    "updated": source.get("updated", ""),
+                    "description": source.get("description", ""),
+                    "is_parent": source.get("is_parent", True),
+                    "not_commit_to_jira": source.get("not_commit_to_jira", False),
+                    "created_at": source.get("created_at", ""),
+                    "updated_at": source.get("updated_at", ""),
                 }
             return None
 
@@ -344,19 +371,8 @@ class JiraIssueEmbeddingDB:
             self.logger.error(f"Failed to find similar Jira issue: {e}")
             return None
 
-    def add_jira_issue(
-        self, jira_issue_data: JiraIssueDetails, error_log_data: Optional[ErrorLog] = None
-    ) -> Dict[str, Any]:
-        """
-        Add a new Jira issue with embedding to the database.
-
-        Args:
-            jira_issue_data: Jira issue data
-            error_log_data: Optional error log data for embedding calculation
-
-        Returns:
-            OpenSearch response
-        """
+    def add_jira_issue_from_jira_issue_detail(self, jira_issue_data: JiraIssueDetails) -> Dict[str, Any]:
+        """Add or upsert a JiraIssueDetails-backed document to the embedding DB."""
         try:
             # Check if issue already exists by exact key match
             try:
@@ -375,13 +391,8 @@ class JiraIssueEmbeddingDB:
                 # Document doesn't exist, continue with adding
                 pass
 
-            # Calculate embedding
-            if error_log_data:
-                # Use error log data for embedding
-                embedding = self._generate_embedding_from_data(error_log_data)
-            else:
-                # Use Jira issue data for embedding
-                embedding = self._generate_embedding_from_data(jira_issue_data)
+            # Calculate embedding from Jira issue data
+            embedding = self._generate_embedding_from_data(jira_issue_data)
 
             if embedding is None:
                 error_msg = f"Cannot generate embedding for Jira issue {jira_issue_data.key}"
@@ -393,26 +404,27 @@ class JiraIssueEmbeddingDB:
                     result = self.find_jira_issue_by_key(jira_issue_data.key)
                     if result:
                         self.logger.info(f"Jira issue {jira_issue_data.key} already exists in database, skipping")
-                        return {"result": "skipped", "reason": "already_exists", "id": jira_issue_data.key}
+                        return {
+                            "result": "skipped",
+                            "reason": "already_exists",
+                            "similar_issue_key": jira_issue_data.key,
+                        }
                 except Exception:
                     # Document doesn't exist, continue with adding
                     pass
             else:
-                # Check for similar issues with 99% threshold
+                # If no key, protect against near-duplicates with a strict check
                 similar_issue = self.find_similar_jira_issue(
                     error_log_embedding=embedding, site=(jira_issue_data.site or "unknown"), similarity_threshold=0.9999
                 )
-
                 if similar_issue:
                     self.logger.info(
-                        f"Similar Jira issue found with 99%+ similarity: {similar_issue.get('key', 'unknown')}, "
-                        f"skipping {jira_issue_data.key}"
+                        f"Similar Jira issue found with 99%+ similarity: {similar_issue.get('key', 'unknown')}, skipping"
                     )
                     return {
                         "result": "skipped",
                         "reason": "similar_issue_found",
                         "similar_issue_key": similar_issue.get("key"),
-                        "similarity_score": similar_issue.get("_score", 0),
                     }
 
             # Prepare document
@@ -438,14 +450,32 @@ class JiraIssueEmbeddingDB:
                 "log_group": jira_issue_data.log_group,
             }
 
-            # Index document
+            # Save to embedding database
             response = self.opensearch_connect.index(index=self.get_current_index_name(), body=doc)
-            self.logger.info(f"Added Jira issue {jira_issue_data.key} to embedding database")
+            assigned_id = response.get("_id", None)
 
-            return {"result": "added", "id": jira_issue_data.key, "opensearch_response": response}
+            self.logger.info(f"Added Jira issue {assigned_id} to embedding database")
+            return {"result": "added", "id": assigned_id, "opensearch_response": response}
 
         except Exception as e:
-            self.logger.error(f"Failed to add Jira issue {jira_issue_data.key}: {e}")
+            self.logger.error(f"Failed to add Jira issue {jira_issue_data.key}: {e}", exc_info=True)
+            raise
+
+    def add_jira_issue_from_error_log(self, error_log_data: ErrorLog) -> Dict[str, Any]:
+        """Create and add a Jira issue derived from an ErrorLog to the embedding DB."""
+        try:
+            details = self._create_jira_issue_from_error_log(error_log_data, getattr(error_log_data, "site", "unknown"))
+            jira_cloud_client = JiraCloudClient(self.config.jira)
+            if not details.key:
+                details.key = jira_cloud_client.create_issue(details)
+
+            if not details:
+                raise ValueError("Failed to build JiraIssueDetails from error log", exc_info=True)
+            return self.add_jira_issue_from_jira_issue_detail(details)
+        except Exception as e:
+            self.logger.error(
+                f"Failed to add Jira issue from error log {getattr(error_log_data, 'message_id', '')}: {e}"
+            )
             raise
 
     def find_similar_jira_issue(
@@ -500,27 +530,33 @@ class JiraIssueEmbeddingDB:
             # logger.info(f"Searching for similar Jira issue with body: {search_body}")
             search_body_str = json.dumps(search_body)
             response = self.opensearch_connect.search(index=self.get_current_index_name(), body=search_body)
+            candidates = []
             for hit in response["hits"]["hits"]:
                 source = hit["_source"]
                 logger.info(f"Similar Jira issue found: {source['key']}, score: {hit['_score']}")
+                doc_candidate = {
+                    "doc_id": hit["_id"],
+                    "key": source["key"],
+                    "score": hit["_score"],
+                    "summary": source.get("summary", ""),
+                    "description": source.get("description", ""),
+                    "status": source.get("status", ""),
+                    "error_message": source.get("error_message", ""),
+                    "error_type": source.get("error_type", ""),
+                    "traceback": source.get("traceback", ""),
+                    "site": source.get("site", ""),
+                    "request_id": source.get("request_id", ""),
+                    "created": source.get("created", ""),
+                    "updated": source.get("updated", ""),
+                    "parent_issue_key": source.get("parent_issue_key", ""),
+                    "is_parent": source.get("is_parent", True),
+                }
                 if source["site"] == site and source["is_parent"] == True:
-                    return {
-                        "doc_id": hit["_id"],
-                        "key": source["key"],
-                        "score": hit["_score"],
-                        "summary": source.get("summary", ""),
-                        "description": source.get("description", ""),
-                        "status": source.get("status", ""),
-                        "error_message": source.get("error_message", ""),
-                        "error_type": source.get("error_type", ""),
-                        "traceback": source.get("traceback", ""),
-                        "site": source.get("site", ""),
-                        "request_id": source.get("request_id", ""),
-                        "created": source.get("created", ""),
-                        "updated": source.get("updated", ""),
-                        "parent_issue_key": source.get("parent_issue_key", ""),
-                        "is_parent": source.get("is_parent", True),
-                    }
+                    candidates.append(doc_candidate)
+                    if doc_candidate["key"]:
+                        return doc_candidate
+            if len(candidates) > 0:
+                return candidates[0]
             return None
 
         except Exception as e:
@@ -541,10 +577,12 @@ class JiraIssueEmbeddingDB:
         """
         try:
             # TODO: check doc_id is not in source_doc_id's occurrence_list
-            source_doc = self.get_issue_by_key(source_doc_id)
+            source_doc = self.opensearch_connect.get(index=self.get_current_index_name(), id=source_doc_id)
             if source_doc:
-                if doc_id in source_doc.get("_source", {}).get("occurrence_list", []):
-                    for occ in source_doc.get("_source", {}).get("occurrence_list", []):
+                if '_source' in source_doc:
+                    source_doc = source_doc['_source']
+                if doc_id in source_doc.get("occurrence_list"):
+                    for occ in source_doc.get("occurrence_list"):
                         if occ["doc_id"] == doc_id:
                             self.logger.info(f"Doc {doc_id} already in {source_doc_id}'s occurrence_list, skipping")
                             return {"result": "skipped", "reason": "already_exists", "id": source_doc_id}
@@ -565,36 +603,12 @@ class JiraIssueEmbeddingDB:
 
             response = self.opensearch_connect.update(index=index_name, id=source_doc_id, body=script)
 
-            self.logger.debug(f"Added occurrence {doc_id} to Jira issue {source_doc_id}")
+            self.logger.debug(f"Added occurrence {doc_id} to Jira issue {source_doc_id}", exc_info=True)
             return response
 
         except Exception as e:
-            self.logger.error(f"Failed to add occurrence to {source_doc_id}: {e}")
+            self.logger.error(f"Failed to add occurrence to {source_doc_id}: {e}", exc_info=True)
             raise
-
-    def get_issue_by_key(self, jira_key: str) -> Optional[Dict[str, Any]]:
-        """
-        Retrieve a specific Jira issue by its key.
-
-        Args:
-            jira_key: Jira issue key
-
-        Returns:
-            Jira issue data or None if not found
-        """
-        try:
-            index_name = self.get_current_index_name()
-
-            response = self.opensearch_connect.get(index=index_name, id=jira_key)
-
-            if response["found"]:
-                return response["_source"]
-
-            return None
-
-        except Exception as e:
-            self.logger.error(f"Failed to get Jira issue {jira_key}: {e}")
-            return None
 
     def remove_duplicate_occurrences(self, doc_key: str) -> bool:
         """
@@ -604,18 +618,20 @@ class JiraIssueEmbeddingDB:
             doc_data = self.opensearch_connect.get(index=self.get_current_index_name(), id=doc_key)
             if not doc_data:
                 return False
+            if '_source' in doc_data:
+                doc_data = doc_data['_source']
             occurrences = doc_data.get("occurrence_list", [])
             occ_set = set()
             occ_data = {}
             for occ in occurrences:
                 occ_set.add(occ["doc_id"])
                 occ_data[occ["doc_id"]] = occ
-            occurences = []
-            for occ_id in occ_set:
-                occurences.append(occ_data[occ_id])
-            if len(occurences) < len(occ_set):
+            if len(occurrences) != len(occ_set):
+                target = []
+                for occ_id in occ_set:
+                    target.append(occ_data[occ_id])
                 self.opensearch_connect.update(
-                    index=self.get_current_index_name(), id=doc_key, body={"occurrence_list": occurences}
+                    index=self.get_current_index_name(), id=doc_key, body={"doc": {"occurrence_list": target}}
                 )
 
         except Exception as e:
@@ -819,7 +835,7 @@ class JiraIssueEmbeddingDB:
                     continue
 
                 # Add Jira issue to database
-                result = self.add_jira_issue(jira_issue_data)
+                result = self.add_jira_issue_from_jira_issue_detail(jira_issue_data)
                 results["jira_issues_processed"] += 1
 
                 if result.get("result") == "added":
@@ -855,7 +871,6 @@ class JiraIssueEmbeddingDB:
         self.logger.info(f"Processing {total_error_logs} error logs")
 
         for error_log in error_logs:
-
             try:
                 # Calculate embedding for error log
                 error_embedding = self._generate_embedding_from_data(error_log)
@@ -888,16 +903,20 @@ class JiraIssueEmbeddingDB:
                     # Create new Jira issue from error log
                     new_jira_data = self._create_jira_issue_from_error_log(error_log, error_log.site)
                     if new_jira_data:
-                        self.add_jira_issue(new_jira_data)
-                        initialization_results["new_issues_created"] += 1
+                        result = self.add_jira_issue_from_jira_issue_detail(new_jira_data)
+                        if result.get("result") == "added":
+                            initialization_results["new_issues_created"] += 1
+                        else:
+                            logger.error(
+                                f"Failed to add new Jira issue {new_jira_data.key}: {result.get('error')}",
+                                exc_info=True,
+                            )
 
                 initialization_results["error_logs_processed"] += 1
-
             except Exception as e:
                 error_msg = f"Failed to process error log {error_log.message_id} for site {error_log.site}: {e}"
                 self.logger.error(error_msg)
                 initialization_results["errors"].append(error_msg)
-                continue
 
         return initialization_results
 
@@ -989,7 +1008,7 @@ class JiraIssueEmbeddingDB:
                 "errors": [error_msg],
             }
 
-    def _create_jira_issue_from_error_log(self, error_log: Any, site: str) -> Optional[JiraIssueDetails]:
+    def _create_jira_issue_from_error_log(self, error_log: ErrorLog, site: str) -> Optional[JiraIssueDetails]:
         """
         Create a new Jira issue from an error log when no similar issue is found.
 
@@ -1000,10 +1019,13 @@ class JiraIssueEmbeddingDB:
         Returns:
             JiraIssueDetails object or None if creation fails
         """
+        # if not skip_create_jira:
+        #     # Add to Jira Cloud
+        #     self.add_jira_issue_from_error_log(error_log)
         try:
             # Create JiraIssueDetails from error log
             jira_data = JiraIssueDetails(
-                key="",
+                key=None,
                 summary=error_log.error_message[:100] if error_log.error_message else "Error from logs",
                 status="Open",
                 parent_issue_key=None,
@@ -1025,7 +1047,7 @@ class JiraIssueEmbeddingDB:
             return jira_data
 
         except Exception as e:
-            self.logger.error(f"Failed to create Jira issue from error log {error_log.message_id}: {e}")
+            self.logger.error(f"Failed to create Jira issue from error log {error_log.message_id}: {e}", exc_info=True)
             return None
 
     def health_check(self) -> Dict[str, Any]:

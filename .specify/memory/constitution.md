@@ -11,7 +11,7 @@
  - **principle**: should not include implementation detail in specific document
 ### [CodingRules]
 [LOG]
-- **always-print-stack-trace**: Always print stack trace while logging error. e.g. logging.error("error message", , exc_info=True)
+- **always-print-stack-trace**: Always print stack trace while logging error. e.g. logging.error("error message", exc_info=True)
 - **log-folder**: put log file into log folder if possible
 [IMPORT]
 - **no-relative-import**: Never use relative path for import

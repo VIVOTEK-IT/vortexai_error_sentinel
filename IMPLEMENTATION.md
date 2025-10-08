@@ -659,7 +659,7 @@ class JiraIssueEmbeddingDB:
     def get_current_index_name(self) -> str
     def get_index_name_for_year(self, year: int) -> str
     def create_index(self, year: Optional[int] = None) -> Dict[str, Any]
-    def add_jira_issue(self, jira_issue_data: JiraIssueData, error_log_data: Optional[ErrorLog] = None) -> Dict[str, Any]
+    
     def find_similar_jira_issue(self, error_log_embedding: List[float], site: str, similarity_threshold: float = 0.85) -> Optional[Dict[str, Any]]
     def add_occurrence(self, jira_key: str, doc_id: str, timestamp: str, year: Optional[int] = None) -> Dict[str, Any]
     def get_issue_by_key(self, jira_key: str, year: Optional[int] = None) -> Optional[Dict[str, Any]]
