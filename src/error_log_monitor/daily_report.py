@@ -12,7 +12,7 @@ from error_log_monitor.config import load_config
 from error_log_monitor.embedding_service import EmbeddingService
 from error_log_monitor.jira_issue_embedding_db import JiraIssueEmbeddingDB
 from error_log_monitor.jira_cloud_client import JiraCloudClient
-from error_log_monitor.opensearch_client import OpenSearchClient
+from error_log_monitor.opensearch_client import ErrorLog, OpenSearchClient
 from error_log_monitor.report_shared import (
     JiraIssueSnapshot,
     fetch_embedding_docs,
@@ -64,7 +64,7 @@ class DailyReportGenerator:
     def __init__(self):
         self.config = load_config()
         self.embedding_service = EmbeddingService(model_name=self.config.vector_db.embedding_model)
-        self.jira_embedding_opensearch_client = JiraIssueEmbeddingDB(
+        self.jira_embedding_db = JiraIssueEmbeddingDB(
             embedding_service=self.embedding_service, config=self.config
         )
         self.jira_client = JiraCloudClient(self.config)
@@ -93,12 +93,12 @@ class DailyReportGenerator:
 
         logger.info("Fetching embedding issues for the past 24 hours")
         t0 = time.perf_counter()
-        daily_embedding_docs = fetch_embedding_docs(self.jira_embedding_opensearch_client, a_month_ago, end_date)
+        daily_embedding_docs = fetch_embedding_docs(self.jira_embedding_db, a_month_ago, end_date)
         timings["fetch_embeddings"] = round(time.perf_counter() - t0, 3)
         logger.info(f"Found {len(daily_embedding_docs)} embedding issues")
         logger.info("Synchronizing statuses")
         t0 = time.perf_counter()
-        sync_embedding_statuses(self.jira_embedding_opensearch_client, daily_embedding_docs, jira_by_key)
+        sync_embedding_statuses(self.jira_embedding_db, daily_embedding_docs, jira_by_key)
         timings["sync_statuses"] = round(time.perf_counter() - t0, 3)
         logger.warning(f"sync_statuses took {timings['sync_statuses']:.3f}s")
 
@@ -111,29 +111,34 @@ class DailyReportGenerator:
         logger.info(f"Updating {len(error_logs_24_hours)} embedding occurrences based on error logs")
         t0 = time.perf_counter()
         update_embedding_with_error_logs(
-            self.jira_embedding_opensearch_client, self.embedding_service, error_logs_24_hours
+            self.jira_embedding_db, self.error_log_opensearch_client, self.embedding_service, error_logs_24_hours
         )
         timings["update_with_error_logs"] = round(time.perf_counter() - t0, 3)
         logger.warning(f"update_with_error_logs took {timings['update_with_error_logs']:.3f}s")
 
         logger.info("Refreshing embedding issues after updates")
         t0 = time.perf_counter()
-        daily_embedding_docs = fetch_embedding_docs(self.jira_embedding_opensearch_client, a_day_ago, end_date)
+        daily_embedding_docs = fetch_embedding_docs(self.jira_embedding_db, a_day_ago, end_date)
         timings["refresh_embeddings_1"] = round(time.perf_counter() - t0, 3)
         logger.warning(f"refresh_embeddings_1 took {timings['refresh_embeddings_1']:.3f}s")
 
         t0 = time.perf_counter()
-        merge_orphan_embedding_docs(self.jira_embedding_opensearch_client, daily_embedding_docs)
+        merge_orphan_embedding_docs(self.jira_embedding_db, daily_embedding_docs)
         timings["merge_orphans"] = round(time.perf_counter() - t0, 3)
         logger.warning(f"merge_orphans took {timings['merge_orphans']:.3f}s")
 
         t0 = time.perf_counter()
-        daily_embedding_docs = fetch_embedding_docs(self.jira_embedding_opensearch_client, a_day_ago, end_date)
+        daily_embedding_docs = fetch_embedding_docs(self.jira_embedding_db, a_day_ago, end_date)
         timings["refresh_embeddings_2"] = round(time.perf_counter() - t0, 3)
         logger.warning(f"refresh_embeddings_2 took {timings['refresh_embeddings_2']:.3f}s")
 
+        logger.info("Fetching error logs again for the past 24 hours")
         t0 = time.perf_counter()
-        site_reports = self._build_site_reports(daily_embedding_docs, a_day_ago, end_date)
+        error_logs_24_hours = fetch_error_logs(self.error_log_opensearch_client, a_day_ago, end_date)
+        timings["fetch_error_logs"] = round(time.perf_counter() - t0, 3)
+        
+        t0 = time.perf_counter()
+        site_reports = self._build_site_reports(error_logs_24_hours, a_day_ago, end_date)
         timings["build_site_reports"] = round(time.perf_counter() - t0, 3)
         logger.warning(f"build_site_reports took {timings['build_site_reports']:.3f}s")
 
@@ -158,32 +163,51 @@ class DailyReportGenerator:
     # Reporting helpers
     # ------------------------------------------------------------------
     def _build_site_reports(
-        self, embedding_docs: List[Dict[str, Any]], start_date: datetime, end_date: datetime
+        self, error_logs: List[ErrorLog], start_date: datetime, end_date: datetime
     ) -> Dict[str, Dict[str, Any]]:
         reports: Dict[str, Dict[str, Any]] = {}
-        for doc in embedding_docs:
-            key = doc.get("key")
+        collected_issues: dict[str, dict[str, (dict, list[datetime])]] = {} #{site, {key, (count, occurrence timestamps)}}
+        collected_issues['unknown'] = {}
+        collected_issues['dev'] = {}
+        collected_issues['stage'] = {}
+        collected_issues['prod'] = {}
+        for error_log in error_logs:
+            
+            jira_reference = error_log.jira_reference
+            if not jira_reference:
+                logger.error(f"skip a issue due to empty jira_reference: {error_log.message_id}:{error_log.error_message}")
+                continue
+            jira_issue = self.jira_embedding_db.opensearch_connect.get(index=self.jira_embedding_db.get_current_index_name(), id=jira_reference)
+            if not jira_issue:
+                logger.error(f"skip a issue due to empty jira_issue: {jira_reference}")
+                continue
+            jira_issue = jira_issue['_source']
+            key = jira_issue.get("key", None)
             if not key:
-                logger.warning("skip a issue due to empty key: %s", doc)
+                logger.error(f"skip a issue due to empty key: {jira_reference}:{jira_issue.get('error_message', 'unknown')}")
                 continue
-            site = doc.get("site", "unknown")
-            occurrences = doc.get("occurrence_list", []) or []
-            recent_timestamps = filter_occurrence_timestamps(occurrences, start_date, end_date)
-            if not recent_timestamps:
-                continue
-
-            latest_update = max(recent_timestamps)
-            row = DailyReportRow(
-                key=key,
-                site=site,
-                count=len(recent_timestamps),
-                error_message=doc.get("error_message", ""),
-                status=doc.get("status", "Unknown"),
-                log_group=doc.get("log_group", "Unknown"),
-                latest_update=latest_update,
-            )
-            reports.setdefault(site, {"issues": []})
-            reports[site]["issues"].append(row)
+            key = jira_issue.get("key", None)           
+            site = jira_issue.get("site", "unknown")
+            
+            if key not in collected_issues[site]:
+                collected_issues[site][key] = (jira_issue, [error_log.timestamp])
+            else:
+                collected_issues[site][key][1].append(error_log.timestamp)
+            
+        for site, issues in collected_issues.items():
+            for key, (jira_issue, timestamps) in issues.items():
+                latest_update = max(timestamps)
+                row = DailyReportRow(
+                    key=key,
+                    site=site,
+                    count=len(timestamps),
+                    error_message=jira_issue.get("error_message", ""),
+                    status=jira_issue.get("status", "Unknown"),
+                    log_group=jira_issue.get("log_group", "Unknown"),
+                    latest_update=latest_update,
+                )
+                reports.setdefault(site, {"issues": []})
+                reports[site]["issues"].append(row)
 
         for site, payload in reports.items():
             rows: List[DailyReportRow] = payload["issues"]

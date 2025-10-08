@@ -63,7 +63,7 @@ class ErrorLog:
     log_group: Optional[str] = None
     module_name: Optional[str] = None
     version: Optional[str] = None
-
+    jira_reference: Optional[str] = None
 
 class OpenSearchClient:
     """OpenSearch client for error log operations."""
@@ -161,8 +161,8 @@ class OpenSearchClient:
             error_type_hash = self._calculate_hash(error_type) if error_type else None
 
             # Compose service name from log_group and module_name
-            log_group = source.get('log_group', '')
-            module_name = source.get('module_name', '')
+            log_group = source.get('log_group', None)
+            module_name = source.get('module_name', None)
 
             if log_group and module_name:
                 service = f"{log_group}.{module_name}"
@@ -185,13 +185,14 @@ class OpenSearchClient:
                 site=site,
                 service=service,
                 index_name=index_name,
-                topic=source.get('topic'),
+                topic=source.get('topic', None),
                 count=source.get('count', 1),
-                request_id=source.get('request_id'),
-                category=source.get('category'),
+                request_id=source.get('request_id', None),
+                category=source.get('category', None),
                 log_group=log_group,
                 module_name=module_name,
-                version=source.get('version'),
+                version=source.get('version', None),
+                jira_reference=source.get('jira_reference', None),
             )
 
         except Exception as e:

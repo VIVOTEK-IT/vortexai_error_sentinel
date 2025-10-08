@@ -272,6 +272,7 @@ def _merge_single_orphan(
 
 def update_embedding_with_error_logs(
     jira_embedding_db: JiraIssueEmbeddingDB,
+    error_log_db: OpenSearchClient,
     embedding_service: EmbeddingService,
     logs: Sequence[ErrorLog],
     similarity_threshold: float = 0.85,
@@ -279,6 +280,10 @@ def update_embedding_with_error_logs(
     # Step 1: Precompute all embeddings
     enriched: List[Dict[str, Any]] = []
     for log in logs:
+        if log.jira_reference:
+            #skip processed logs
+            continue
+        
         emb = build_log_embedding(embedding_service, log)
         if emb is None:
             continue
@@ -326,13 +331,16 @@ def update_embedding_with_error_logs(
 
         match = jira_embedding_db.find_similar_jira_issue(rep_emb, site, similarity_threshold=similarity_threshold)
         if match and match.get("key"):
+            source_doc_id = match["doc_id"]
             for log in cluster["members"]:
-                try:
-                    jira_embedding_db.add_occurrence(
-                        source_doc_id=match["doc_id"],
-                        doc_id=log.message_id,
-                        timestamp=log.timestamp.isoformat(),
-                    )
+                index = log.index_name
+                try:       
+                    # jira_embedding_db.add_occurrence(
+                    #     source_doc_id=source_doc_id,
+                    #     doc_id=log.message_id,
+                    #     timestamp=log.timestamp.isoformat(),
+                    # )
+                    resoponse = error_log_db.client.update(index=index, id=log.message_id, body={"doc": {"jira_reference": source_doc_id}})
                 except Exception:
                     logger.warning("Failed to add occurrence for %s", match.get("key"), exc_info=True)
             try:
@@ -364,6 +372,7 @@ def update_embedding_with_error_logs(
                                 doc_id=log.message_id,
                                 timestamp=log.timestamp.isoformat(),
                             )
+                            resoponse = error_log_db.client.update(index=index, id=log.message_id, body={"doc": {"jira_reference": source_doc_id}})
                         except Exception:
                             logger.warning("Failed to add occurrence for new issue %s", new_issue.key, exc_info=True)
                     source_doc = jira_embedding_db.opensearch_connect.get(

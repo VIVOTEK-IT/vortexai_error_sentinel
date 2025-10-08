@@ -175,9 +175,12 @@ def generate_daily_report_html_email(
             }}
             .error-message {{
                 max-width: 300px;
+                min-width: 100px;
                 overflow: hidden;
                 text-overflow: ellipsis;
                 white-space: nowrap;
+                word-wrap: break-word;
+                vertical-align: top;
             }}
             .count-badge {{
                 background: #667eea;
@@ -203,6 +206,14 @@ def generate_daily_report_html_email(
             .footer a {{
                 color: #667eea;
                 text-decoration: none;
+            }}
+            .jira-link {{
+                color: #667eea;
+                text-decoration: none;
+                font-weight: bold;
+            }}
+            .jira-link:hover {{
+                text-decoration: underline;
             }}
         </style>
     </head>
@@ -263,12 +274,21 @@ def _generate_site_section(site: str, issues: List[DailyReportRow], start_date: 
     table_rows = []
     for issue in issues:
         status_class = _get_status_class(issue.status)
+        
+        # Handle error message properly
+        error_msg = issue.error_message or "No error message available"
+        if len(error_msg) > 97:
+            display_msg = error_msg[:97] + "..."
+        else:
+            display_msg = error_msg
+            
+        issue_link = f'<a href="https://vivotek.atlassian.net/browse/{issue.key}" target="_blank" class="jira-link">{issue.key}</a>'
         table_rows.append(
             f"""
             <tr>
-                <td><strong>{issue.key}</strong></td>
+                <td><strong>{issue_link}</strong></td>
                 <td><span class="count-badge">{issue.count}</span></td>
-                <td class="error-message" title="{issue.error_message}">{issue.error_message[:100]}{'...' if len(issue.error_message) > 100 else ''}</td>
+                <td class="error-message" title="{error_msg}">{display_msg}</td>
                 <td><span class="status-badge {status_class}">{issue.status}</span></td>
                 <td>{issue.log_group}</td>
                 <td>{issue.latest_update.strftime('%Y-%m-%d %H:%M:%S')}</td>
