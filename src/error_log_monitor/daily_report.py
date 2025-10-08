@@ -64,9 +64,11 @@ class DailyReportGenerator:
     def __init__(self):
         self.config = load_config()
         self.embedding_service = EmbeddingService(model_name=self.config.vector_db.embedding_model)
-        self.jira_embedding_db = JiraIssueEmbeddingDB(embedding_service=self.embedding_service, config=self.config)
+        self.jira_embedding_opensearch_client = JiraIssueEmbeddingDB(
+            embedding_service=self.embedding_service, config=self.config
+        )
         self.jira_client = JiraCloudClient(self.config)
-        self.opensearch_client = OpenSearchClient(self.config.opensearch)
+        self.error_log_opensearch_client = OpenSearchClient(self.config.opensearch)
 
     # ------------------------------------------------------------------
     # Public API
@@ -91,40 +93,42 @@ class DailyReportGenerator:
 
         logger.info("Fetching embedding issues for the past 24 hours")
         t0 = time.perf_counter()
-        daily_embedding_docs = fetch_embedding_docs(self.jira_embedding_db, a_month_ago, end_date)
+        daily_embedding_docs = fetch_embedding_docs(self.jira_embedding_opensearch_client, a_month_ago, end_date)
         timings["fetch_embeddings"] = round(time.perf_counter() - t0, 3)
         logger.info(f"Found {len(daily_embedding_docs)} embedding issues")
         logger.info("Synchronizing statuses")
         t0 = time.perf_counter()
-        sync_embedding_statuses(self.jira_embedding_db, daily_embedding_docs, jira_by_key)
+        sync_embedding_statuses(self.jira_embedding_opensearch_client, daily_embedding_docs, jira_by_key)
         timings["sync_statuses"] = round(time.perf_counter() - t0, 3)
         logger.warning(f"sync_statuses took {timings['sync_statuses']:.3f}s")
 
         logger.info("Fetching error logs for the past 24 hours")
         t0 = time.perf_counter()
-        error_logs_24_hours = fetch_error_logs(self.opensearch_client, a_day_ago, end_date)
+        error_logs_24_hours = fetch_error_logs(self.error_log_opensearch_client, a_day_ago, end_date)
         timings["fetch_error_logs"] = round(time.perf_counter() - t0, 3)
         logger.warning(f"fetch_error_logs took {timings['fetch_error_logs']:.3f}s")
 
         logger.info(f"Updating {len(error_logs_24_hours)} embedding occurrences based on error logs")
         t0 = time.perf_counter()
-        update_embedding_with_error_logs(self.jira_embedding_db, self.embedding_service, error_logs_24_hours)
+        update_embedding_with_error_logs(
+            self.jira_embedding_opensearch_client, self.embedding_service, error_logs_24_hours
+        )
         timings["update_with_error_logs"] = round(time.perf_counter() - t0, 3)
         logger.warning(f"update_with_error_logs took {timings['update_with_error_logs']:.3f}s")
 
         logger.info("Refreshing embedding issues after updates")
         t0 = time.perf_counter()
-        daily_embedding_docs = fetch_embedding_docs(self.jira_embedding_db, a_day_ago, end_date)
+        daily_embedding_docs = fetch_embedding_docs(self.jira_embedding_opensearch_client, a_day_ago, end_date)
         timings["refresh_embeddings_1"] = round(time.perf_counter() - t0, 3)
         logger.warning(f"refresh_embeddings_1 took {timings['refresh_embeddings_1']:.3f}s")
 
         t0 = time.perf_counter()
-        merge_orphan_embedding_docs(self.jira_embedding_db, daily_embedding_docs)
+        merge_orphan_embedding_docs(self.jira_embedding_opensearch_client, daily_embedding_docs)
         timings["merge_orphans"] = round(time.perf_counter() - t0, 3)
         logger.warning(f"merge_orphans took {timings['merge_orphans']:.3f}s")
 
         t0 = time.perf_counter()
-        daily_embedding_docs = fetch_embedding_docs(self.jira_embedding_db, a_day_ago, end_date)
+        daily_embedding_docs = fetch_embedding_docs(self.jira_embedding_opensearch_client, a_day_ago, end_date)
         timings["refresh_embeddings_2"] = round(time.perf_counter() - t0, 3)
         logger.warning(f"refresh_embeddings_2 took {timings['refresh_embeddings_2']:.3f}s")
 
