@@ -7,10 +7,7 @@ from error_log_monitor.daily_report import DailyReportRow
 
 
 def generate_daily_report_html_email(
-    site_reports: Dict[str, Dict[str, Any]],
-    start_date: datetime,
-    end_date: datetime,
-    total_issues: int = 0
+    site_reports: Dict[str, Dict[str, Any]], start_date: datetime, end_date: datetime, total_issues: int = 0
 ) -> str:
     """
     Generate HTML email content for daily report.
@@ -25,21 +22,21 @@ def generate_daily_report_html_email(
         HTML email content
     """
     today = datetime.now().strftime("%Y-%m-%d")
-    
+
     # Generate site-specific sections
     site_sections = []
     for site, report_data in site_reports.items():
         issues = report_data.get("issues", [])
         if not issues:
             continue
-            
+
         site_section = _generate_site_section(site, issues, start_date, end_date)
         site_sections.append(site_section)
 
     # Calculate summary statistics
     total_stage_issues = len(site_reports.get("stage", {}).get("issues", []))
     total_prod_issues = len(site_reports.get("prod", {}).get("issues", []))
-    
+
     html_content = f"""
     <!DOCTYPE html>
     <html lang="en">
@@ -230,10 +227,6 @@ def generate_daily_report_html_email(
                     <div class="stat-number">{total_prod_issues}</div>
                     <div class="stat-label">Production Issues</div>
                 </div>
-                <div class="stat-card">
-                    <div class="stat-number">{len(site_reports)}</div>
-                    <div class="stat-label">Active Sites</div>
-                </div>
             </div>
             <p><strong>Report Period:</strong> {start_date.strftime('%Y-%m-%d %H:%M')} to {end_date.strftime('%Y-%m-%d %H:%M')} UTC</p>
         </div>
@@ -247,13 +240,13 @@ def generate_daily_report_html_email(
     </body>
     </html>
     """
-    
+
     return html_content
 
 
 def _generate_site_section(site: str, issues: List[DailyReportRow], start_date: datetime, end_date: datetime) -> str:
     """Generate HTML section for a specific site."""
-    
+
     if not issues:
         return f"""
         <div class="site-section">
@@ -265,12 +258,13 @@ def _generate_site_section(site: str, issues: List[DailyReportRow], start_date: 
             </div>
         </div>
         """
-    
+
     # Generate table rows
     table_rows = []
     for issue in issues:
         status_class = _get_status_class(issue.status)
-        table_rows.append(f"""
+        table_rows.append(
+            f"""
             <tr>
                 <td><strong>{issue.key}</strong></td>
                 <td><span class="count-badge">{issue.count}</span></td>
@@ -279,8 +273,9 @@ def _generate_site_section(site: str, issues: List[DailyReportRow], start_date: 
                 <td>{issue.log_group}</td>
                 <td>{issue.latest_update.strftime('%Y-%m-%d %H:%M:%S')}</td>
             </tr>
-        """)
-    
+        """
+        )
+
     return f"""
     <div class="site-section">
         <div class="site-header">
@@ -318,4 +313,3 @@ def _get_status_class(status: str) -> str:
         return 'status-closed'
     else:
         return 'status-open'  # Default
-

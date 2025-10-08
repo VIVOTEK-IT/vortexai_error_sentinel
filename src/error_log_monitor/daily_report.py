@@ -11,8 +11,8 @@ from typing import Any, Dict, List, Optional
 from error_log_monitor.config import load_config
 from error_log_monitor.embedding_service import EmbeddingService
 from error_log_monitor.jira_issue_embedding_db import JiraIssueEmbeddingDB
-from error_log_monitor.jira_cloud_client import JiraCloudClient, JiraIssueDetails
-from error_log_monitor.opensearch_client import OpenSearchClient, ErrorLog
+from error_log_monitor.jira_cloud_client import JiraCloudClient
+from error_log_monitor.opensearch_client import OpenSearchClient
 from error_log_monitor.report_shared import (
     JiraIssueSnapshot,
     fetch_embedding_docs,
@@ -165,6 +165,7 @@ class DailyReportGenerator:
         for doc in embedding_docs:
             key = doc.get("key")
             if not key:
+                logger.warning("skip a issue due to empty key: %s", doc)
                 continue
             site = doc.get("site", "unknown")
             occurrences = doc.get("occurrence_list", []) or []

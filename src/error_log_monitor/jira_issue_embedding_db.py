@@ -343,28 +343,31 @@ class JiraIssueEmbeddingDB:
             response = self.opensearch_connect.search(index=self.get_current_index_name(), body=search_body)
             for hit in response["hits"]["hits"]:
                 source = hit["_source"]
+                source['doc_id'] = hit["_id"]
+                source["score"] = hit["_score"]
                 logger.info(f"Jira issue found: {source['key']}, score: {hit['_score']}")
 
-                return {
-                    "key": source["key"],
-                    "status": source.get("status", ""),
-                    "parent_issue_key": source.get("parent_issue_key", ""),
-                    "is_parent": source.get("is_parent", True),
-                    "error_message": source.get("error_message", ""),
-                    "error_type": source.get("error_type", ""),
-                    "traceback": source.get("traceback", ""),
-                    "site": source.get("site", ""),
-                    "request_id": source.get("request_id", ""),
-                    "log_group": source.get("log_group", ""),
-                    "count": source.get("count", ""),
-                    "created": source.get("created", ""),
-                    "updated": source.get("updated", ""),
-                    "description": source.get("description", ""),
-                    "is_parent": source.get("is_parent", True),
-                    "not_commit_to_jira": source.get("not_commit_to_jira", False),
-                    "created_at": source.get("created_at", ""),
-                    "updated_at": source.get("updated_at", ""),
-                }
+                return source
+                # {
+                #     "key": source["key"],
+                #     "status": source.get("status", ""),
+                #     "parent_issue_key": source.get("parent_issue_key", ""),
+                #     "is_parent": source.get("is_parent", True),
+                #     "error_message": source.get("error_message", ""),
+                #     "error_type": source.get("error_type", ""),
+                #     "traceback": source.get("traceback", ""),
+                #     "site": source.get("site", ""),
+                #     "request_id": source.get("request_id", ""),
+                #     "log_group": source.get("log_group", ""),
+                #     "count": source.get("count", ""),
+                #     "created": source.get("created", ""),
+                #     "updated": source.get("updated", ""),
+                #     "description": source.get("description", ""),
+                #     "is_parent": source.get("is_parent", True),
+                #     "not_commit_to_jira": source.get("not_commit_to_jira", False),
+                #     "created_at": source.get("created_at", ""),
+                #     "updated_at": source.get("updated_at", ""),
+                # }
             return None
 
         except Exception as e:
@@ -408,6 +411,7 @@ class JiraIssueEmbeddingDB:
                             "result": "skipped",
                             "reason": "already_exists",
                             "similar_issue_key": jira_issue_data.key,
+                            "similar_issue": result,
                         }
                 except Exception:
                     # Document doesn't exist, continue with adding
@@ -424,7 +428,7 @@ class JiraIssueEmbeddingDB:
                     return {
                         "result": "skipped",
                         "reason": "similar_issue_found",
-                        "similar_issue_key": similar_issue.get("key"),
+                        "similar_issue": similar_issue,
                     }
 
             # Prepare document
@@ -534,23 +538,26 @@ class JiraIssueEmbeddingDB:
             for hit in response["hits"]["hits"]:
                 source = hit["_source"]
                 logger.info(f"Similar Jira issue found: {source['key']}, score: {hit['_score']}")
-                doc_candidate = {
-                    "doc_id": hit["_id"],
-                    "key": source["key"],
-                    "score": hit["_score"],
-                    "summary": source.get("summary", ""),
-                    "description": source.get("description", ""),
-                    "status": source.get("status", ""),
-                    "error_message": source.get("error_message", ""),
-                    "error_type": source.get("error_type", ""),
-                    "traceback": source.get("traceback", ""),
-                    "site": source.get("site", ""),
-                    "request_id": source.get("request_id", ""),
-                    "created": source.get("created", ""),
-                    "updated": source.get("updated", ""),
-                    "parent_issue_key": source.get("parent_issue_key", ""),
-                    "is_parent": source.get("is_parent", True),
-                }
+                doc_candidate = source
+                doc_candidate["doc_id"] = hit["_id"]
+                doc_candidate["score"] = hit["_score"]
+                # {
+                #     "doc_id": hit["_id"],
+                #     "key": source["key"],
+                #     "score": hit["_score"],
+                #     "summary": source.get("summary", ""),
+                #     "description": source.get("description", ""),
+                #     "status": source.get("status", ""),
+                #     "error_message": source.get("error_message", ""),
+                #     "error_type": source.get("error_type", ""),
+                #     "traceback": source.get("traceback", ""),
+                #     "site": source.get("site", ""),
+                #     "request_id": source.get("request_id", ""),
+                #     "created": source.get("created", ""),
+                #     "updated": source.get("updated", ""),
+                #     "parent_issue_key": source.get("parent_issue_key", ""),
+                #     "is_parent": source.get("is_parent", True),
+                # }
                 if source["site"] == site and source["is_parent"] == True:
                     candidates.append(doc_candidate)
                     if doc_candidate["key"]:

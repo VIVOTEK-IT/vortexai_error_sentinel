@@ -170,7 +170,9 @@ def sync_embedding_statuses(
             payload["log_group"] = snapshot.log_group
         if jira_status != current_status or (snapshot.log_group and doc.get("log_group") != snapshot.log_group):
             try:
-                jira_embedding_db.client.update(index=index_name, id=doc.get("doc_id"), body={"doc": {**payload}})
+                jira_embedding_db.opensearch_connect.update(
+                    index=index_name, id=doc.get("doc_id"), body={"doc": {**payload}}
+                )
                 doc.update(payload)
             except Exception:
                 logger.warning("Failed to update status/log_group for %s", key, exc_info=True)
@@ -347,8 +349,10 @@ def update_embedding_with_error_logs(
                     if result.get('result') == 'added':
                         source_doc_id = result.get("id", None)
                     elif result.get('result') == 'skipped':
-                        similar_issue_key = result.get("similar_issue_key", None)
-                        similar_issue = jira_embedding_db.find_jira_issue_by_key(similar_issue_key)
+                        similar_issue = result.get("similar_issue", None)
+                        similar_issue_key = similar_issue.get("key", None)
+                        if not similar_issue_key:
+                            logger.warning("Similar issue key is None for doc id %s", result.get("doc_id", None))
                         if similar_issue:
                             source_doc_id = similar_issue.get("doc_id", None)
                     # Add occurrences for all logs in the cluster
@@ -370,7 +374,7 @@ def update_embedding_with_error_logs(
                         jira_cloud_client = JiraCloudClient(jira_embedding_db.config.jira)
                         jira_issue_key = jira_cloud_client.create_jira_issue(source_doc)
                         source_doc["key"] = jira_issue_key
-                        jira_embedding_db.client.update(
+                        jira_embedding_db.opensearch_connect.update(
                             index=jira_embedding_db.get_current_index_name(), id=source_doc_id, body={"doc": source_doc}
                         )
 

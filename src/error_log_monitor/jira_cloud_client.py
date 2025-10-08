@@ -20,6 +20,33 @@ from error_log_monitor.config import JiraConfig, SystemConfig
 logger = logging.getLogger(__name__)
 
 
+@dataclass
+class JiraIssueDetails:
+    """Detailed Jira issue information from Jira Cloud API."""
+
+    key: str
+    summary: str
+    status: str
+    parent_issue_key: Optional[str] = None
+    child_issue_keys: List[str] = None
+    error_message: Optional[str] = None
+    error_type: Optional[str] = None
+    traceback: Optional[str] = None
+    site: Optional[str] = None
+    request_id: Optional[str] = None
+    log_group: Optional[str] = None
+    count: Optional[int] = None
+    created: Optional[str] = None
+    updated: Optional[str] = None
+    description: Optional[str] = None
+    is_parent: bool = True
+    not_commit_to_jira: bool = False
+
+    def __post_init__(self):
+        if self.child_issue_keys is None:
+            self.child_issue_keys = []
+
+
 def format_traceback_for_jira_rtf(raw_text: str) -> str:
     """
     將 raw traceback（以分號分隔）格式化為 Jira RTF 欄位可用的 Markdown 文字，
@@ -77,38 +104,27 @@ def clean_summary_for_creation(summary: str) -> str:
     return cleaned.strip()
 
 
-@dataclass
-class JiraIssueDetails:
-    """Detailed Jira issue information from Jira Cloud API."""
+def clean_summary_for_creation(summary: str) -> str:
+    # 移除控制字符
+    cleaned = summary.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
 
-    key: str
-    summary: str
-    status: str
-    parent_issue_key: Optional[str] = None
-    child_issue_keys: List[str] = None
-    error_message: Optional[str] = None
-    error_type: Optional[str] = None
-    traceback: Optional[str] = None
-    site: Optional[str] = None
-    request_id: Optional[str] = None
-    log_group: Optional[str] = None
-    count: Optional[int] = None
-    created: Optional[str] = None
-    updated: Optional[str] = None
-    description: Optional[str] = None
-    is_parent: bool = True
-    not_commit_to_jira: bool = False
+    # 限制长度
+    if len(cleaned) > 255:
+        cleaned = cleaned[:252] + "..."
 
-    def __post_init__(self):
-        if self.child_issue_keys is None:
-            self.child_issue_keys = []
+    return cleaned.strip()
 
 
-def extract_summary_from_issue(issue: JiraIssueDetails) -> str:
-    summary = issue.error_message[:100] if issue.error_message else "Unknown Error"
-    issue_time = issue.issue_time.strftime("%Y%m%d")
-    summary = f"[{issue_time}][{issue.site}] - {summary}"
-    return summary
+def extract_summary_from_issue(issue: dict) -> str:
+    err_msg = issue.get('error_message', None)
+    summary = err_msg[:100] if err_msg else "Unknown Error"
+    issue_time = issue.get('created', datetime.datetime.now(datetime.timezone.utc))
+    if isinstance(issue_time, str):
+        issue_time = datetime.datetime.fromisoformat(issue_time)
+    issue_time = issue_time.strftime("%Y%m%d")
+    site = issue.get('site', 'unknown')
+    summary = f"[{issue_time}][{site}] - {summary}"
+    return clean_summary_for_creation(summary)
 
 
 class JiraCloudClient:
@@ -491,12 +507,6 @@ class JiraCloudClient:
                 logger.error("issue_time is None, cannot create Jira issue", exc_info=True)
                 raise ValueError("issue_time cannot be None")
 
-            base_summary = (
-                title
-                or jira_issue.get('summary', None)
-                or jira_issue.get('error_message', None)
-                or "Auto-created from logs"
-            )
             if jira_issue.get('request_id', None):
                 issue_time = jira_issue.get('created', None)
                 start = (
@@ -514,7 +524,7 @@ class JiraCloudClient:
                     f"""[https://{region}.console.aws.amazon.com/cloudwatch/home?region={region}#logsV2:logs-insights$3FqueryDetail$3D~(end~'{end}~start~'{start}~timeType~'ABSOLUTE~tz~'{timezone}~editorString~'fields*20*40timestamp*2c*20*40message*2c*20*40logStream*2c*20*40log*2c*20strcontains*28*40message*2c*20*27{request_id}*27*29*20as*20unf*0a*7c*20filter*20unf*20*3d*201*0a*7c*20sort*20*40timestamp*20asc*0a*7c*20limit*209999~source~(~'{log_group})~lang~'CWLI\)]"""
                 )
             # Jira summary has length limits; trim conservatively
-            summary = (base_summary or "Auto-created from logs").strip()
+            summary = extract_summary_from_issue(jira_issue)
             if len(summary) > 255:
                 summary = summary[:252] + "..."
 
