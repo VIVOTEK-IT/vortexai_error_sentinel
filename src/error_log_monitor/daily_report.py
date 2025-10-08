@@ -75,18 +75,23 @@ class DailyReportGenerator:
         """Generate daily report covering the most recent 24-hour window."""
         end_date = datetime.now(timezone.utc).astimezone(timezone.utc)
         a_day_ago = (end_date - timedelta(hours=24)).astimezone(timezone.utc)
+        a_month_ago = (end_date - timedelta(days=30)).astimezone(timezone.utc)
         timings: Dict[str, float] = {}
 
-        logger.info("Fetching Jira issues for the past 1 day")
+        logger.info("Fetching Jira issues for the past 90 days")
         t0 = time.perf_counter()
-        jira_snapshots = self._fetch_recent_jira_issues(duration_in_days=1)
+        jira_snapshots = fetch_jira_snapshots(
+            self.jira_client,
+            project_key=self.config.jira.project_key,
+            duration_in_days=90,
+        )
         timings["fetch_jira"] = round(time.perf_counter() - t0, 3)
         jira_by_key = {issue.key: issue for issue in jira_snapshots if issue.key}
         logger.warning(f"fetch_jira took {timings['fetch_jira']:.3f}s")
 
         logger.info("Fetching embedding issues for the past 24 hours")
         t0 = time.perf_counter()
-        daily_embedding_docs = fetch_embedding_docs(self.jira_embedding_db, a_day_ago, end_date)
+        daily_embedding_docs = fetch_embedding_docs(self.jira_embedding_db, a_month_ago, end_date)
         timings["fetch_embeddings"] = round(time.perf_counter() - t0, 3)
         logger.info(f"Found {len(daily_embedding_docs)} embedding issues")
         logger.info("Synchronizing statuses")
@@ -140,16 +145,6 @@ class DailyReportGenerator:
             "combined_excel_path": combined_path,
             "timings": timings,
         }
-
-    # ------------------------------------------------------------------
-    # Data acquisition
-    # ------------------------------------------------------------------
-    def _fetch_recent_jira_issues(self, duration_in_days: int = 30) -> List[JiraIssueSnapshot]:
-        return fetch_jira_snapshots(
-            self.jira_client,
-            project_key=self.config.jira.project_key,
-            duration_in_days=duration_in_days,
-        )
 
     # ------------------------------------------------------------------
     # Cleanup and synchronization

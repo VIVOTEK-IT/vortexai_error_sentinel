@@ -170,8 +170,9 @@ def sync_embedding_statuses(
             payload["log_group"] = snapshot.log_group
         if jira_status != current_status or (snapshot.log_group and doc.get("log_group") != snapshot.log_group):
             try:
-                jira_embedding_db.opensearch_connect.update(
-                    index=index_name, id=doc.get("doc_id"), body={"doc": {**payload}}
+                doc_id = doc.get("doc_id")
+                response = jira_embedding_db.opensearch_connect.update(
+                    index=index_name, id=doc_id, body={"doc": {**payload}}
                 )
                 doc.update(payload)
             except Exception:

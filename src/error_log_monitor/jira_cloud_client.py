@@ -132,7 +132,7 @@ class JiraCloudClient:
 
     def __init__(self, config: JiraConfig):
         """Initialize Jira Cloud client."""
-        self.config = config
+        self.config: JiraConfig = config
         if not self.config:
             self.config = config.load_config().jira
 
@@ -159,9 +159,7 @@ class JiraCloudClient:
             logger.error(f"Error connecting to Jira Cloud: {e}", exc_info=True)
             self.client = None
 
-    def get_issue_details(
-        self, issue_key: str, custom_field_mapping: Optional[Dict[str, str]] = None
-    ) -> Optional[JiraIssueDetails]:
+    def get_issue_details(self, issue_key: str) -> Optional[JiraIssueDetails]:
         """Get detailed information for a specific Jira issue."""
         try:
             if not self.client:
@@ -169,10 +167,7 @@ class JiraCloudClient:
                 return None
 
             # Get custom field mapping if not provided
-            if custom_field_mapping is None:
-                field_id_index, _ = get_jira_field_index(self.client)
-                custom_field_mapping = field_id_index
-
+            field_id_index = self.config.field_id_index
             # Fetch the issue with all necessary fields
             issue = self.client.issue(issue_key)
 
@@ -202,9 +197,9 @@ class JiraCloudClient:
             log_group = None
             count = None
 
-            if custom_field_mapping:
+            if field_id_index:
                 # Map custom field IDs to field names
-                reverse_mapping = {v: k for k, v in custom_field_mapping.items()}
+                reverse_mapping = {v: k for k, v in field_id_index.items()}
 
                 for field_id, field_name in reverse_mapping.items():
                     field_value = getattr(issue.fields, field_id, None)
@@ -509,11 +504,14 @@ class JiraCloudClient:
 
             if jira_issue.get('request_id', None):
                 issue_time = jira_issue.get('created', None)
+                if isinstance(issue_time, str):
+                    issue_time = datetime.datetime.fromisoformat(issue_time)
                 start = (
                     (issue_time - datetime.timedelta(hours=12)).strftime("%Y-%m-%dT%H:%M:%S.000Z").replace(":", "*3a")
                 )
                 end = (issue_time + datetime.timedelta(hours=12)).strftime("%Y-%m-%dT%H:%M:%S.000Z").replace(":", "*3a")
-                region = get_region_by_site(jira_issue.site) if jira_issue.site else "us-east-1"
+                site = jira_issue.get('site', None)
+                region = get_region_by_site(site) if site else "unknown"
                 timezone = "UTC"
                 request_id = jira_issue.get('request_id', None)
                 log_group = jira_issue.get('log_group', '')
