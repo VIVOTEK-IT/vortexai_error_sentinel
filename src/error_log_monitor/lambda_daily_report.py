@@ -1,4 +1,53 @@
-"""AWS Lambda handler for daily report generation and email sending."""
+"""
+AWS Lambda handlers for daily and weekly report generation and email sending.
+
+Available Lambda Handlers:
+==========================
+
+1. lambda_handler(event, context)
+   - Main handler supporting both daily and weekly reports
+   - Event parameter: {"report_type": "daily" | "weekly"} (optional, defaults to "daily")
+   - Generates report and sends email
+
+2. generate_daily_report(event, context)
+   - Convenience handler specifically for daily reports
+   - Always generates daily report and sends email
+
+3. generate_weekly_report(event, context)
+   - Convenience handler specifically for weekly reports
+   - Always generates weekly report and sends email
+
+4. generate_report_only(event, context)
+   - Generates report without sending email
+   - Event parameter: {"report_type": "daily" | "weekly"} (optional, defaults to "daily")
+   - Useful for testing or when email is not required
+
+5. test_email_service(event, context)
+   - Tests email service configuration
+   - Sends a test email to verify SES setup
+   - Returns email service status and quota information
+
+Usage Examples:
+==============
+
+Daily Report (with email):
+{
+  "report_type": "daily"
+}
+
+Weekly Report (with email):
+{
+  "report_type": "weekly"
+}
+
+Report only (no email):
+{
+  "report_type": "daily"
+}
+
+Email test:
+{}
+"""
 
 import json
 import logging
@@ -16,28 +65,38 @@ logger.setLevel(logging.INFO)
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
-    AWS Lambda handler for daily report generation and email sending.
+    AWS Lambda handler for daily and weekly report generation and email sending.
 
     Args:
-        event: Lambda event data
+        event: Lambda event data with optional 'report_type' field ("daily" or "weekly")
         context: Lambda context
 
     Returns:
         Lambda response dictionary
     """
     try:
-        logger.info("Starting daily report generation Lambda function")
+        # Extract report type from event, default to "daily"
+        report_type = event.get("report_type", "daily").lower()
+        if report_type not in ["daily", "weekly"]:
+            logger.warning(f"Invalid report_type '{report_type}', defaulting to 'daily'")
+            report_type = "daily"
+
+        logger.info(f"Starting {report_type} report generation Lambda function")
 
         # Load configuration
         config = load_config()
 
-        # Initialize services
-        report_generator = DailyReportGenerator()
+        # Initialize services (disable Excel generation for Lambda)
+        report_generator = DailyReportGenerator(generate_excel=False)
         email_service = EmailService(config.email)
 
-        # Generate daily report
-        logger.info("Generating daily report...")
-        report_data = report_generator.generate_daily_report()
+        # Generate report based on type
+        if report_type == "weekly":
+            logger.info("Generating weekly report...")
+            report_data = report_generator.generate_weekly_report()
+        else:
+            logger.info("Generating daily report...")
+            report_data = report_generator.generate_daily_report()
 
         # Calculate total issues across all sites
         total_issues = sum(
@@ -54,25 +113,27 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         )
 
         # Send email
-        logger.info("Sending daily report email...")
+        logger.info(f"Sending {report_type} report email...")
         email_sent = email_service.send_daily_report_email(html_content)
 
         if not email_sent:
-            logger.error("Failed to send daily report email")
+            logger.error(f"Failed to send {report_type} report email")
             return {
                 "statusCode": 500,
                 "body": json.dumps(
                     {
-                        "error": "Failed to send daily report email",
+                        "error": f"Failed to send {report_type} report email",
                         "report_generated": True,
                         "total_issues": total_issues,
+                        "report_type": report_type,
                     }
                 ),
             }
 
         # Prepare response
         response_data = {
-            "message": "Daily report generated and sent successfully",
+            "message": f"{report_type.title()} report generated and sent successfully",
+            "report_type": report_type,
             "report_period": {
                 "start_date": report_data.get("start_date").isoformat(),
                 "end_date": report_data.get("end_date").isoformat(),
@@ -90,42 +151,52 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             "email_sent": True,
         }
 
-        logger.info(f"Daily report completed successfully. Total issues: {total_issues}")
+        logger.info(f"{report_type.title()} report completed successfully. Total issues: {total_issues}")
 
         return {"statusCode": 200, "body": json.dumps(response_data, default=str)}
 
     except Exception as e:
-        logger.error(f"Error in daily report Lambda function: {str(e)}", exc_info=True)
+        logger.error(f"Error in {report_type} report Lambda function: {str(e)}", exc_info=True)
         return {
             "statusCode": 500,
             "body": json.dumps({"error": f"Internal server error: {str(e)}", "report_generated": False}),
         }
 
 
-def generate_daily_report_only(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+def generate_report_only(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
-    Lambda handler for generating daily report without sending email.
+    Lambda handler for generating daily or weekly report without sending email.
     Useful for testing or when email sending is not required.
 
     Args:
-        event: Lambda event data
+        event: Lambda event data with optional 'report_type' field ("daily" or "weekly")
         context: Lambda context
 
     Returns:
         Lambda response dictionary
     """
     try:
-        logger.info("Starting daily report generation (no email)")
+        # Extract report type from event, default to "daily"
+        report_type = event.get("report_type", "daily").lower()
+        if report_type not in ["daily", "weekly"]:
+            logger.warning(f"Invalid report_type '{report_type}', defaulting to 'daily'")
+            report_type = "daily"
+
+        logger.info(f"Starting {report_type} report generation (no email)")
 
         # Load configuration
         config = load_config()
 
-        # Initialize report generator
-        report_generator = DailyReportGenerator()
+        # Initialize report generator (disable Excel generation for Lambda)
+        report_generator = DailyReportGenerator(generate_excel=False)
 
-        # Generate daily report
-        logger.info("Generating daily report...")
-        report_data = report_generator.generate_daily_report()
+        # Generate report based on type
+        if report_type == "weekly":
+            logger.info("Generating weekly report...")
+            report_data = report_generator.generate_weekly_report()
+        else:
+            logger.info("Generating daily report...")
+            report_data = report_generator.generate_daily_report()
 
         # Calculate total issues across all sites
         total_issues = sum(
@@ -134,7 +205,8 @@ def generate_daily_report_only(event: Dict[str, Any], context: Any) -> Dict[str,
 
         # Prepare response
         response_data = {
-            "message": "Daily report generated successfully",
+            "message": f"{report_type.title()} report generated successfully",
+            "report_type": report_type,
             "report_period": {
                 "start_date": report_data.get("start_date").isoformat(),
                 "end_date": report_data.get("end_date").isoformat(),
@@ -152,16 +224,50 @@ def generate_daily_report_only(event: Dict[str, Any], context: Any) -> Dict[str,
             "email_sent": False,
         }
 
-        logger.info(f"Daily report generated successfully. Total issues: {total_issues}")
+        logger.info(f"{report_type.title()} report generated successfully. Total issues: {total_issues}")
 
         return {"statusCode": 200, "body": json.dumps(response_data, default=str)}
 
     except Exception as e:
-        logger.error(f"Error in daily report generation: {str(e)}", exc_info=True)
+        logger.error(f"Error in {report_type} report generation: {str(e)}", exc_info=True)
         return {
             "statusCode": 500,
             "body": json.dumps({"error": f"Internal server error: {str(e)}", "report_generated": False}),
         }
+
+
+def generate_weekly_report(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+    """
+    Lambda handler specifically for weekly report generation and email sending.
+    Convenience function for weekly reports.
+
+    Args:
+        event: Lambda event data
+        context: Lambda context
+
+    Returns:
+        Lambda response dictionary
+    """
+    # Force weekly report type
+    event["report_type"] = "weekly"
+    return lambda_handler(event, context)
+
+
+def generate_daily_report(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
+    """
+    Lambda handler specifically for daily report generation and email sending.
+    Convenience function for daily reports.
+
+    Args:
+        event: Lambda event data
+        context: Lambda context
+
+    Returns:
+        Lambda response dictionary
+    """
+    # Force daily report type
+    event["report_type"] = "daily"
+    return lambda_handler(event, context)
 
 
 def test_email_service(event: Dict[str, Any], context: Any) -> Dict[str, Any]:

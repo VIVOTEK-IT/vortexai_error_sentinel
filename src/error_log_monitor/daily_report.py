@@ -50,8 +50,16 @@ class DailyReportRow:
 class DailyReportGenerator:
     """Generate daily and weekly reports using Jira issues, embedding DB, and error logs."""
 
-    def __init__(self):
+    def __init__(self, generate_excel: bool = True):
+        """
+        Initialize DailyReportGenerator.
+        
+        Args:
+            generate_excel: Whether to generate Excel files. Set to False for Lambda environments
+                           to reduce execution time and storage requirements.
+        """
         self.config = load_config()
+        self.generate_excel = generate_excel
         self.embedding_service = EmbeddingService(model_name=self.config.vector_db.embedding_model)
         self.jira_embedding_db = JiraIssueEmbeddingDB(
             embedding_service=self.embedding_service, config=self.config
@@ -131,10 +139,15 @@ class DailyReportGenerator:
         timings["build_site_reports"] = round(time.perf_counter() - t0, 3)
         logger.warning(f"build_site_reports took {timings['build_site_reports']:.3f}s")
 
-        t0 = time.perf_counter()
-        combined_path = generate_combined_excel_report(site_reports, a_day_ago, end_date, "daily_report")
-        timings["generate_combined_excel"] = round(time.perf_counter() - t0, 3)
-        logger.warning(f"generate_combined_excel took {timings['generate_combined_excel']:.3f}s")
+        # Generate combined Excel report only if enabled
+        if self.generate_excel:
+            t0 = time.perf_counter()
+            combined_path = generate_combined_excel_report(site_reports, a_day_ago, end_date, "daily_report")
+            timings["generate_combined_excel"] = round(time.perf_counter() - t0, 3)
+            logger.warning(f"generate_combined_excel took {timings['generate_combined_excel']:.3f}s")
+        else:
+            combined_path = None
+            timings["generate_combined_excel"] = 0.0
 
         return {
             "start_date": a_day_ago,
@@ -213,10 +226,15 @@ class DailyReportGenerator:
         timings["build_site_reports"] = round(time.perf_counter() - t0, 3)
         logger.warning(f"build_site_reports took {timings['build_site_reports']:.3f}s")
 
-        t0 = time.perf_counter()
-        combined_path = generate_combined_excel_report(site_reports, a_week_ago, end_date, "weekly_report")
-        timings["generate_combined_excel"] = round(time.perf_counter() - t0, 3)
-        logger.warning(f"generate_combined_excel took {timings['generate_combined_excel']:.3f}s")
+        # Generate combined Excel report only if enabled
+        if self.generate_excel:
+            t0 = time.perf_counter()
+            combined_path = generate_combined_excel_report(site_reports, a_week_ago, end_date, "weekly_report")
+            timings["generate_combined_excel"] = round(time.perf_counter() - t0, 3)
+            logger.warning(f"generate_combined_excel took {timings['generate_combined_excel']:.3f}s")
+        else:
+            combined_path = None
+            timings["generate_combined_excel"] = 0.0
 
         return {
             "start_date": a_week_ago,
@@ -295,8 +313,16 @@ class DailyReportGenerator:
         for site, payload in reports.items():
             rows: List[DailyReportRow] = payload["issues"]
             rows.sort(key=lambda r: r.latest_update, reverse=True)
-            payload["excel_path"] = generate_excel_report(site, rows, start_date, end_date, "daily_report")
+            
+            # Generate HTML report (always generated)
             payload["html_path"] = generate_html_report(site, rows, start_date, end_date, "daily_report")
+            
+            # Generate Excel report only if enabled
+            if self.generate_excel:
+                payload["excel_path"] = generate_excel_report(site, rows, start_date, end_date, "daily_report")
+            else:
+                payload["excel_path"] = None
+                
             payload["count"] = len(rows)
         logger.warning(f"generate_combined_excel took {timings:.3f}s")
         logger.info(f"send out reports: {payload}")
