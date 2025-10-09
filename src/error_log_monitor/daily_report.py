@@ -242,6 +242,7 @@ class DailyReportGenerator:
         collected_issues['dev'] = {}
         collected_issues['stage'] = {}
         collected_issues['prod'] = {}
+        collented_count = 0
         for error_log in error_logs:
             
             jira_reference = error_log.jira_reference
@@ -264,13 +265,14 @@ class DailyReportGenerator:
                 logger.error(f"skip a issue due to empty key: {jira_reference}:{jira_issue.get('error_message', 'unknown')}")
                 continue
             key = jira_issue.get("key", None)           
-            site = jira_issue.get("site", "unknown")
-            
+            site = jira_issue.get("site", "unknown")            
             if key not in collected_issues[site]:
                 collected_issues[site][key] = (jira_issue, [error_log.timestamp])
+                collected_count += 1
             else:
                 collected_issues[site][key][1].append(error_log.timestamp)
-        logger.warning(f"collected_issues: {collected_issues}")
+        
+        logger.warning(f"collected_count: {collected_count}")
         t0 = time.perf_counter()
         for site, issues in collected_issues.items():
             for key, (jira_issue, timestamps) in issues.items():
