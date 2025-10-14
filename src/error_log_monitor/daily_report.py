@@ -47,13 +47,14 @@ class DailyReportRow:
         # Ensure this class implements the ReportRow protocol
         pass
 
+
 class DailyReportGenerator:
     """Generate daily and weekly reports using Jira issues, embedding DB, and error logs."""
 
     def __init__(self, generate_excel: bool = True):
         """
         Initialize DailyReportGenerator.
-        
+
         Args:
             generate_excel: Whether to generate Excel files. Set to False for Lambda environments
                            to reduce execution time and storage requirements.
@@ -61,9 +62,7 @@ class DailyReportGenerator:
         self.config = load_config()
         self.generate_excel = generate_excel
         self.embedding_service = EmbeddingService(model_name=self.config.vector_db.embedding_model)
-        self.jira_embedding_db = JiraIssueEmbeddingDB(
-            embedding_service=self.embedding_service, config=self.config
-        )
+        self.jira_embedding_db = JiraIssueEmbeddingDB(embedding_service=self.embedding_service, config=self.config)
         self.jira_client = JiraCloudClient(self.config)
         self.error_log_opensearch_client = OpenSearchClient(self.config.opensearch)
 
@@ -133,7 +132,7 @@ class DailyReportGenerator:
         t0 = time.perf_counter()
         error_logs_24_hours = fetch_error_logs(self.error_log_opensearch_client, a_day_ago, end_date)
         timings["fetch_error_logs"] = round(time.perf_counter() - t0, 3)
-        
+
         t0 = time.perf_counter()
         site_reports = self._build_site_reports(error_logs_24_hours, a_day_ago, end_date)
         timings["build_site_reports"] = round(time.perf_counter() - t0, 3)
@@ -220,7 +219,7 @@ class DailyReportGenerator:
         t0 = time.perf_counter()
         error_logs_7_days = fetch_error_logs(self.error_log_opensearch_client, a_week_ago, end_date)
         timings["fetch_error_logs"] = round(time.perf_counter() - t0, 3)
-        
+
         t0 = time.perf_counter()
         site_reports = self._build_site_reports(error_logs_7_days, a_week_ago, end_date)
         timings["build_site_reports"] = round(time.perf_counter() - t0, 3)
@@ -255,44 +254,61 @@ class DailyReportGenerator:
         self, error_logs: List[ErrorLog], start_date: datetime, end_date: datetime
     ) -> Dict[str, Dict[str, Any]]:
         reports: Dict[str, Dict[str, Any]] = {}
-        collected_issues: dict[str, dict[str, (dict, list[datetime])]] = {} #{site, {key, (count, occurrence timestamps)}}
+        collected_issues: dict[str, dict[str, (dict, list[datetime])]] = (
+            {}
+        )  # {site, {key, (count, occurrence timestamps)}}
         collected_issues['unknown'] = {}
         collected_issues['dev'] = {}
         collected_issues['stage'] = {}
         collected_issues['prod'] = {}
-        collented_count = 0
+        collected_count = 0
         for error_log in error_logs:
-            
+
             jira_reference = error_log.jira_reference
             if not jira_reference:
-                logger.error(f"skip a issue due to empty jira_reference: {error_log.message_id}:{error_log.error_message}")
+                logger.error(
+                    f"skip a issue due to empty jira_reference: {error_log.message_id}:{error_log.error_message}"
+                )
                 continue
             try:
-                jira_issue = self.jira_embedding_db.opensearch_connect.get(index=self.jira_embedding_db.get_current_index_name(), id=jira_reference)
-            except:
-                logger.error(f"skip a issue due to error getting jira_issue: {jira_reference}. Remove jira_reference from error_log: {error_log.message_id}")
-                self.error_log_opensearch_client.client.update(index=error_log.index_name, id=error_log.message_id, body={"doc": {"jira_reference": None}})
+                jira_issue = self.jira_embedding_db.opensearch_connect.get(
+                    index=self.jira_embedding_db.get_current_index_name(), id=jira_reference
+                )
+            except Exception as e:
+                logger.error(
+                    f"skip a issue due to error getting jira_issue: {jira_reference}. Remove jira_reference from error_log: {error_log.message_id}",
+                    exc_info=True,
+                )
+                self.error_log_opensearch_client.client.update(
+                    index=error_log.index_name, id=error_log.message_id, body={"doc": {"jira_reference": None}}
+                )
                 continue
             if not jira_issue:
-                logger.error(f"skip a issue due to empty jira_issue: {jira_reference}. Remove jira_reference from error_log: {error_log.message_id}")
+                logger.error(
+                    f"skip a issue due to empty jira_issue: {jira_reference}. Remove jira_reference from error_log: {error_log.message_id}"
+                )
                 # self.error_log_opensearch_client.client.update(index=error_log.index_name, id=error_log.message_id, body={"doc": {"jira_reference": None}})
                 continue
             jira_issue = jira_issue['_source']
             key = jira_issue.get("key", None)
             if not key:
-                logger.error(f"skip a issue due to empty key: {jira_reference}:{jira_issue.get('error_message', 'unknown')}")
+                logger.error(
+                    f"skip a issue due to empty key: {jira_reference}:{jira_issue.get('error_message', 'unknown')}"
+                )
                 continue
-            key = jira_issue.get("key", None)           
-            site = jira_issue.get("site", "unknown")            
+            key = jira_issue.get("key", None)
+            site = jira_issue.get("site", "unknown")
             if key not in collected_issues[site]:
                 collected_issues[site][key] = (jira_issue, [error_log.timestamp])
                 collected_count += 1
             else:
                 collected_issues[site][key][1].append(error_log.timestamp)
-        
+
         logger.warning(f"collected_count: {collected_count}")
         t0 = time.perf_counter()
         for site, issues in collected_issues.items():
+            timestamps = []
+            latest_update = None
             for key, (jira_issue, timestamps) in issues.items():
                 latest_update = max(timestamps)
                 row = DailyReportRow(
@@ -313,16 +329,19 @@ class DailyReportGenerator:
         for site, payload in reports.items():
             rows: List[DailyReportRow] = payload["issues"]
             rows.sort(key=lambda r: r.latest_update, reverse=True)
-            
+
             # Generate HTML report (always generated)
-            payload["html_path"] = generate_html_report(site, rows, start_date, end_date, "daily_report")
-            
+            if self.generate_excel:
+                payload["html_path"], payload["html_content"] = generate_html_report(
+                    site, rows, start_date, end_date, "daily_report", store_to_file=True
+                )
+
             # Generate Excel report only if enabled
             if self.generate_excel:
                 payload["excel_path"] = generate_excel_report(site, rows, start_date, end_date, "daily_report")
             else:
                 payload["excel_path"] = None
-                
+
             payload["count"] = len(rows)
         logger.warning(f"generate_combined_excel took {timings:.3f}s")
         logger.info(f"send out reports: {payload}")

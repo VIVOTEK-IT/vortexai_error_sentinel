@@ -653,7 +653,6 @@ class JiraIssueEmbeddingDB:
     #     Args:
     #         jira_key: Jira issue key
 
-
     #     Returns:
     #         List of occurrence data
     #     """

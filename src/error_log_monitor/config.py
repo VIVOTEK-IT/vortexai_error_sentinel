@@ -234,7 +234,7 @@ class SystemConfig:
 
 def load_config() -> SystemConfig:
     """Load configuration from environment variables."""
-
+    logger.info("Loading configuration from environment variables...")
     # Model configurations
     models = {
         ModelType.GPT5_MINI: ModelConfig(

@@ -160,6 +160,53 @@ def sync_embedding_statuses(
 ) -> None:
 
     index_name = jira_embedding_db.get_current_index_name()
+    # Update Jira issues that are not in the Jira embedding db
+    for key in jira_by_key.keys():
+        jira_issue: JiraIssueDetails = jira_by_key[key]
+        result = jira_embedding_db.find_jira_issue_by_key(key)
+        # Compare result and jira_issue, if not match, update the jira_embedding_db
+        try:
+            if not result:
+                try:
+                    jira_embedding_db.add_jira_issue_from_jira_issue_detail(jira_issue)
+                except Exception:
+                    logger.warning("Failed to add Jira issue %s into embedding DB", key, exc_info=True)
+                continue
+
+            # Prepare payload of fields to sync from Jira into embedding DB
+            payload: Dict[str, Any] = {}
+
+            desired_status = jira_issue.status or "Unknown"
+            current_status = result.get("status") or "Unknown"
+            if desired_status != current_status:
+                payload["status"] = desired_status
+
+            if jira_issue.log_group and result.get("log_group") != jira_issue.log_group:
+                payload["log_group"] = jira_issue.log_group
+
+            if jira_issue.parent_issue_key and result.get("parent_issue_key", None) != jira_issue.parent_issue_key:
+                payload["parent_issue_key"] = jira_issue.parent_issue_key
+
+            desired_is_parent = True if not jira_issue.parent_issue_key else False
+            current_is_parent = True if not result.get("parent_issue_key") else False
+            if desired_is_parent != current_is_parent:
+                payload["is_parent"] = desired_is_parent
+
+            # Keep summary aligned if Jira summary changed
+            if getattr(jira_issue, "summary", None) and result.get("summary") != jira_issue.summary:
+                payload["summary"] = jira_issue.summary
+
+            # Update document if there are changes
+            if payload:
+                doc_id = result.get("doc_id") or result.get("key")
+                if doc_id:
+                    try:
+                        jira_embedding_db.opensearch_connect.update(index=index_name, id=doc_id, body={"doc": payload})
+                    except Exception:
+                        logger.warning("Failed to update embedding doc for %s", key, exc_info=True)
+        except Exception:
+            logger.warning("Failed to sync Jira issue %s into embedding DB", key, exc_info=True)
+
     for doc in embedding_docs:
         payload = {}
         key = doc.get("key")
@@ -173,46 +220,23 @@ def sync_embedding_statuses(
             payload["status"] = jira_status
         if jira_issue_detail.log_group and doc.get("log_group") != jira_issue_detail.log_group:
             payload["log_group"] = jira_issue_detail.log_group
-        if jira_issue_detail.parent_issue_key and doc.get("parent_issue_key", None) != jira_issue_detail.parent_issue_key:
+        if (
+            jira_issue_detail.parent_issue_key
+            and doc.get("parent_issue_key", None) != jira_issue_detail.parent_issue_key
+        ):
             payload["parent_issue_key"] = jira_issue_detail.parent_issue_key
         is_parent = True if not jira_issue_detail.parent_issue_key else False
         is_parent_doc = True if not doc.get("parent_issue_key") else False
         if is_parent != is_parent_doc:
             payload["is_parent"] = is_parent
-        
-        
+
         if len(payload.keys()) > 0:
             try:
                 doc_id = doc.get("doc_id")
-                response = jira_embedding_db.opensearch_connect.update(
-                    index=index_name, id=doc_id, body={"doc": {**payload}}
-                )
+                jira_embedding_db.opensearch_connect.update(index=index_name, id=doc_id, body={"doc": {**payload}})
                 doc.update(payload)
             except Exception:
                 logger.warning("Failed to update status/log_group for %s", key, exc_info=True)
-
-    # # Update Jira issues that are not in the Jira
-    # for embedding_doc in embedding_docs:
-    #     issue = jira_embedding_db.find_jira_issue_by_key(embedding_doc.get("key"))
-    #     if not issue:
-    #         jira_data = JiraIssueDetails(
-    #             key=embedding_doc.get("key"),
-    #             summary=embedding_doc.get("summary", ""),
-    #             status="Pending",
-    #             site=embedding_doc.get("site", "unknown"),
-    #             log_group=embedding_doc.get("log_group", None),
-    #             error_message=embedding_doc.get("error_message", ""),
-    #             error_type=embedding_doc.get("error_type", ""),
-    #             traceback=embedding_doc.get("traceback", ""),
-    #             request_id=embedding_doc.get("request_id", ""),
-    #             count=embedding_doc.get("count", None),
-    #             created=embedding_doc.get("created", None),
-    #             updated=embedding_doc.get("updated", None),
-    #             description=embedding_doc.get("description", ""),
-    #             is_parent=True,
-    #             not_commit_to_jira=False,
-    #         )
-    #         jira_embedding_db.add_jira_issue(jira_data)
 
 
 def merge_orphan_embedding_docs(
@@ -284,6 +308,7 @@ def _merge_single_orphan(
     except Exception:
         logger.warning("Failed to delete orphan embedding doc %s", orphan.get("doc_id"), exc_info=True)
 
+
 def update_error_log_with_jira_reference(
     error_log_db: OpenSearchClient,
     site: str,
@@ -292,27 +317,27 @@ def update_error_log_with_jira_reference(
 ) -> int:
     """
     Find all error logs with old_jira_reference and update them with new_jira_reference.
-    
+
     This function searches across all error log indices (prod and stage) for error logs
     that have the specified old Jira reference and updates them to use the new reference.
     This is useful when Jira issues are merged, renamed, or when correcting incorrect
     references in the error log database.
-    
+
     Args:
         error_log_db: OpenSearch client for error logs
         old_jira_reference: The old Jira reference to find and replace
         new_jira_reference: The new Jira reference to set
-        
+
     Returns:
         Number of error logs updated
-        
+
     Example:
         >>> from error_log_monitor.opensearch_client import OpenSearchClient
         >>> from error_log_monitor.config import load_config
-        >>> 
+        >>>
         >>> config = load_config()
         >>> error_log_db = OpenSearchClient(config.opensearch)
-        >>> 
+        >>>
         >>> # Update all error logs from old reference to new reference
         >>> updated_count = update_error_log_with_jira_reference(
         ...     error_log_db=error_log_db,
@@ -324,95 +349,68 @@ def update_error_log_with_jira_reference(
     if not old_jira_reference or not new_jira_reference:
         logger.warning("Both old_jira_reference and new_jira_reference must be provided")
         return 0
-        
+
     updated_count = 0
     try:
         # Build query to find error logs with the old Jira reference
         query = {
-            "query": {
-                "term": {
-                    "jira_reference": old_jira_reference
-                }
-            },
+            "query": {"term": {"jira_reference": old_jira_reference}},
             "size": 1000,  # Process in batches
-            "_source": ["message_id", "jira_reference"]  # Only fetch necessary fields
+            "_source": ["message_id", "jira_reference"],  # Only fetch necessary fields
         }
-        
+
         # Search for error logs with the old reference
         response = error_log_db.client.search(
-            index=f"error-logs-{site}*",  # Search all error log indices for this site
-            body=query,
-            scroll="2m"
+            index=f"error-logs-{site}*", body=query, scroll="2m"  # Search all error log indices for this site
         )
-        
+
         scroll_id = response.get("_scroll_id")
         hits = response.get("hits", {}).get("hits", [])
-        
+
         # Process all hits
         while hits:
             # Update each error log found
             for hit in hits:
                 doc_id = hit["_id"]
                 index_name = hit["_index"]
-                
+
                 try:
                     # Update the error log with the new Jira reference
                     update_response = error_log_db.client.update(
-                        index=index_name,
-                        id=doc_id,
-                        body={
-                            "doc": {
-                                "jira_reference": new_jira_reference
-                            }
-                        }
+                        index=index_name, id=doc_id, body={"doc": {"jira_reference": new_jira_reference}}
                     )
-                    
+
                     if update_response.get("result") in ["updated"]:
                         updated_count += 1
                         logger.debug(
-                            "Updated error log %s from %s to %s", 
-                            doc_id, old_jira_reference, new_jira_reference
+                            "Updated error log %s from %s to %s", doc_id, old_jira_reference, new_jira_reference
                         )
                     else:
-                        logger.warning(
-                            "Unexpected update result for %s: %s", 
-                            doc_id, update_response.get("result")
-                        )
-                        
+                        logger.warning("Unexpected update result for %s: %s", doc_id, update_response.get("result"))
+
                 except Exception as e:
-                    logger.error(
-                        "Failed to update error log %s: %s", 
-                        doc_id, str(e), exc_info=True
-                    )
-            
+                    logger.error("Failed to update error log %s: %s", doc_id, str(e), exc_info=True)
+
             # Get next batch if there's a scroll ID
             if not scroll_id:
                 break
-                
-            response = error_log_db.client.scroll(
-                scroll_id=scroll_id,
-                scroll="2m"
-            )
+
+            response = error_log_db.client.scroll(scroll_id=scroll_id, scroll="2m")
             scroll_id = response.get("_scroll_id")
             hits = response.get("hits", {}).get("hits", [])
-        
+
         # Clear scroll context
         if scroll_id:
             try:
                 error_log_db.client.clear_scroll(scroll_id=scroll_id)
             except Exception:
                 logger.warning("Failed to clear scroll context for site %s", site)
-                
+
     except Exception as e:
-        logger.error(
-            "Failed to search/update error logs for site %s: %s", 
-            site, str(e), exc_info=True
-            )
- 
-        
+        logger.error("Failed to search/update error logs for site %s: %s", site, str(e), exc_info=True)
+
     logger.info(
-        "Updated %d error logs from Jira reference %s to %s", 
-        updated_count, old_jira_reference, new_jira_reference
+        "Updated %d error logs from Jira reference %s to %s", updated_count, old_jira_reference, new_jira_reference
     )
     return updated_count
 
@@ -425,28 +423,28 @@ def find_error_logs_by_jira_reference(
 ) -> List[Dict]:
     """
     Find error logs that have a specific Jira reference.
-    
+
     This function searches across error log indices for logs that have the specified
     Jira reference. Useful for debugging, verification, or analysis of error logs
     associated with specific Jira issues.
-    
+
     Args:
         error_log_db: OpenSearch client for error logs
         jira_reference: The Jira reference to search for
         site: Site to search in (defaults to ["prod", "stage"])
         limit: Maximum number of results to return
-        
+
     Returns:
         List of error log documents with the specified Jira reference.
         Each document includes the original fields plus '_id' and '_index'.
-        
+
     Example:
         >>> from error_log_monitor.opensearch_client import OpenSearchClient
         >>> from error_log_monitor.config import load_config
-        >>> 
+        >>>
         >>> config = load_config()
         >>> error_log_db = OpenSearchClient(config.opensearch)
-        >>> 
+        >>>
         >>> # Find error logs with a specific Jira reference
         >>> logs = find_error_logs_by_jira_reference(
         ...     error_log_db=error_log_db,
@@ -458,44 +456,36 @@ def find_error_logs_by_jira_reference(
     if not jira_reference:
         logger.warning("jira_reference must be provided")
         return []
-        
-    site_set: Set[str] = set(filter(None, sites or []))
+
+    site_set: Set[str] = set(filter(None, site or []))
     if not site_set:
         site_set = {"prod", "stage"}
-    
-    results: List[Dict] = []
 
-    try:
-        # Build query to find error logs with the Jira reference
-        query = {
-            "query": {
-                "term": {
-                    "jira_reference": jira_reference
-                }
-            },
-            "size": limit,
-            "_source": True  # Return all fields
-        }
-        
-        # Search for error logs with the reference
-        response = error_log_db.client.search(
-            index=f"error-logs-{site}*",  # Search all error log indices for this site
-            body=query
-        )
-        
-        hits = response.get("hits", {}).get("hits", [])
-        for hit in hits:
-            doc = hit["_source"]
-            doc["_id"] = hit["_id"]
-            doc["_index"] = hit["_index"]
-            results.append(doc)
-            
-    except Exception as e:
-        logger.error(
-            "Failed to search error logs for site %s: %s", 
-            site, str(e), exc_info=True
-        )
-    
+    results: List[Dict] = []
+    sites_to_search: List[str] = [site] if site else ["prod", "stage"]
+
+    for s in sites_to_search:
+        try:
+            # Build query to find error logs with the Jira reference
+            query = {
+                "query": {"term": {"jira_reference": jira_reference}},
+                "size": limit,
+                "_source": True,  # Return all fields
+            }
+
+            # Search for error logs with the reference
+            response = error_log_db.client.search(index=f"error-logs-{s}*", body=query)
+
+            hits = response.get("hits", {}).get("hits", [])
+            for hit in hits:
+                doc = hit["_source"]
+                doc["_id"] = hit["_id"]
+                doc["_index"] = hit["_index"]
+                results.append(doc)
+
+        except Exception as e:
+            logger.error("Failed to search error logs for site %s: %s", s, str(e), exc_info=True)
+
     return results
 
 
@@ -510,9 +500,9 @@ def update_embedding_with_error_logs(
     enriched: List[Dict[str, Any]] = []
     for log in logs:
         if log.jira_reference:
-            #skip processed logs
+            # skip processed logs
             continue
-        
+
         emb = build_log_embedding(embedding_service, log)
         if emb is None:
             continue
@@ -563,14 +553,16 @@ def update_embedding_with_error_logs(
             source_doc_id = match["doc_id"]
             for log in cluster["members"]:
                 index = log.index_name
-                try: 
-                    # Skip update occurrence      
+                try:
+                    # Skip update occurrence
                     # jira_embedding_db.add_occurrence(
                     #     source_doc_id=source_doc_id,
                     #     doc_id=log.message_id,
                     #     timestamp=log.timestamp.isoformat(),
                     # )
-                    resoponse = error_log_db.client.update(index=index, id=log.message_id, body={"doc": {"jira_reference": source_doc_id}})
+                    resoponse = error_log_db.client.update(
+                        index=index, id=log.message_id, body={"doc": {"jira_reference": source_doc_id}}
+                    )
                 except Exception:
                     logger.warning("Failed to add occurrence for %s", match.get("key"), exc_info=True)
             # try:
@@ -602,7 +594,9 @@ def update_embedding_with_error_logs(
                             #     doc_id=log.message_id,
                             #     timestamp=log.timestamp.isoformat(),
                             # )
-                            resoponse = error_log_db.client.update(index=log.index_name, id=log.message_id, body={"doc": {"jira_reference": source_doc_id}})
+                            response = error_log_db.client.update(
+                                index=log.index_name, id=log.message_id, body={"doc": {"jira_reference": source_doc_id}}
+                            )
                         except Exception:
                             logger.warning("Failed to add occurrence for new issue %s", new_issue.key, exc_info=True)
                     source_doc = jira_embedding_db.opensearch_connect.get(

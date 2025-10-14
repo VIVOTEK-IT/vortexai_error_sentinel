@@ -51,16 +51,46 @@ Email test:
 
 import json
 import logging
+import sys
 from typing import Dict, Any
-
+import datetime
 from error_log_monitor.config import load_config
 from error_log_monitor.daily_report import DailyReportGenerator
 from error_log_monitor.email_service import EmailService
 from error_log_monitor.email_templates import generate_daily_report_html_email
 
-# Configure logging
+
+# Configure logging for AWS Lambda
+def setup_lambda_logging():
+    """Setup logging configuration for AWS Lambda."""
+    # Remove any existing handlers
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers[:]:
+        root_logger.removeHandler(handler)
+
+    # Configure logging
+    logging.basicConfig(
+        level=logging.INFO,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[logging.StreamHandler(sys.stdout)],
+    )
+
+    # Suppress noisy loggers
+    for logger_name in [
+        'chromadb.telemetry',
+        'chromadb.telemetry.posthog',
+        'chromadb.telemetry.product',
+        'chromadb.telemetry.product.posthog',
+        'urllib3.connectionpool',
+        'boto3',
+        'botocore',
+    ]:
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
+
+
+# Initialize logging
+setup_lambda_logging()
 logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
 
 
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
@@ -76,45 +106,68 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     try:
         # Extract report type from event, default to "daily"
+        if 'recipient' in event:
+            recipients = event.get("recipient")
+        else:
+            recipients = None
         report_type = event.get("report_type", "daily").lower()
         if report_type not in ["daily", "weekly"]:
             logger.warning(f"Invalid report_type '{report_type}', defaulting to 'daily'")
             report_type = "daily"
 
-        logger.info(f"Starting {report_type} report generation Lambda function")
+        logger.info(f"🚀 Starting {report_type} report generation Lambda function")
+        logger.info(f"📊 Event data: {json.dumps(event, default=str)}")
+        logger.info(f"⏰ Lambda context: {context}")
 
         # Load configuration
+        logger.info("🔧 Loading configuration...")
         config = load_config()
-
+        logger.info("✅ Configuration loaded successfully")
+        if recipients:
+            config.email.recipients = recipients
         # Initialize services (disable Excel generation for Lambda)
+        logger.info("🏗️ Initializing report generator...")
         report_generator = DailyReportGenerator(generate_excel=False)
+        logger.info("✅ Report generator initialized")
+
+        logger.info("📧 Initializing email service...")
         email_service = EmailService(config.email)
+        logger.info("✅ Email service initialized")
 
         # Generate report based on type
         if report_type == "weekly":
-            logger.info("Generating weekly report...")
+            logger.info("📈 Generating weekly report...")
             report_data = report_generator.generate_weekly_report()
         else:
-            logger.info("Generating daily report...")
+            logger.info("📅 Generating daily report...")
             report_data = report_generator.generate_daily_report()
+
+        logger.info("✅ Report generation completed")
+        logger.info(f"📊 Report data keys: {list(report_data.keys())}")
 
         # Calculate total issues across all sites
         total_issues = sum(
             len(site_data.get("issues", [])) for site_data in report_data.get("site_reports", {}).values()
         )
+        logger.info(f"📈 Total issues found: {total_issues}")
+        logger.info(f"🏢 Sites with reports: {list(report_data.get('site_reports', {}).keys())}")
 
         # Generate HTML email content
-        logger.info("Generating HTML email content...")
+        logger.info("🎨 Generating HTML email content...")
         html_content = generate_daily_report_html_email(
             site_reports=report_data.get("site_reports", {}),
             start_date=report_data.get("start_date"),
             end_date=report_data.get("end_date"),
             total_issues=total_issues,
         )
+        logger.info(f"✅ HTML content generated (length: {len(html_content)} chars)")
 
         # Send email
-        logger.info(f"Sending {report_type} report email...")
-        email_sent = email_service.send_daily_report_email(html_content)
+        logger.info(f"📧 Sending {report_type} report email...")
+        today = datetime.datetime.now().strftime("%Y-%m-%d")
+        subject = f"[{today}][Vortexai Error Issue] {report_type} issue report"
+        email_sent = email_service.send_daily_report_email(html_content, subject=subject)
+        logger.info(f"📧 Email send result: {email_sent}")
 
         if not email_sent:
             logger.error(f"Failed to send {report_type} report email")
@@ -151,12 +204,15 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
             "email_sent": True,
         }
 
-        logger.info(f"{report_type.title()} report completed successfully. Total issues: {total_issues}")
+        logger.info(f"🎉 {report_type.title()} report completed successfully. Total issues: {total_issues}")
+        logger.info(f"📤 Response data: {json.dumps(response_data, default=str)}")
 
         return {"statusCode": 200, "body": json.dumps(response_data, default=str)}
 
     except Exception as e:
-        logger.error(f"Error in {report_type} report Lambda function: {str(e)}", exc_info=True)
+        logger.error(f"❌ Error in {report_type} report Lambda function: {str(e)}", exc_info=True)
+        logger.error(f"🔍 Exception type: {type(e).__name__}")
+        logger.error(f"📍 Exception args: {e.args}")
         return {
             "statusCode": 500,
             "body": json.dumps({"error": f"Internal server error: {str(e)}", "report_generated": False}),
@@ -185,10 +241,15 @@ def generate_report_only(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         logger.info(f"Starting {report_type} report generation (no email)")
 
         # Load configuration
+        logger.info("🔧 Loading configuration...")
         config = load_config()
+        logger.info("✅ Configuration loaded successfully")
+        logger.info(f"📊 Config loaded for project: {config.jira.project_key}")
 
         # Initialize report generator (disable Excel generation for Lambda)
+        logger.info("🏗️ Initializing report generator...")
         report_generator = DailyReportGenerator(generate_excel=False)
+        logger.info("✅ Report generator initialized")
 
         # Generate report based on type
         if report_type == "weekly":

@@ -15,6 +15,7 @@ SRC_DIR = os.path.join(PROJECT_ROOT, "src")
 
 if SRC_DIR not in sys.path:
     sys.path.insert(0, SRC_DIR)
+
 from error_log_monitor.config import load_config
 from error_log_monitor.daily_report import DailyReportGenerator
 from error_log_monitor.email_service import EmailService
@@ -120,7 +121,9 @@ def main():
 
     parser = argparse.ArgumentParser(description="Run daily or weekly error report")
     parser.add_argument("--no-email", action="store_true", help="Generate report without sending email")
-    parser.add_argument("--type", choices=["daily", "weekly"], default="daily", help="Type of report to generate (default: daily)")
+    parser.add_argument(
+        "--type", choices=["daily", "weekly"], default="daily", help="Type of report to generate (default: daily)"
+    )
 
     args = parser.parse_args()
     # Run report

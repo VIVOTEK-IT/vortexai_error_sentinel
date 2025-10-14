@@ -66,7 +66,7 @@ class EmailService:
                     }
                 }
             )
-            logger.info(f"Daily report email sent successfully. MessageId: {response['MessageId']}")
+            logger.info(f"Daily report email sent successfully. MessageId: {response['MessageId']}, to {recipients}")
             return True
 
         except ClientError as e:

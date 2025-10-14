@@ -79,12 +79,19 @@ def generate_excel_report(
 
 
 def generate_html_report(
-    site: str, rows: List[ReportRow], start: datetime, end: datetime, report_type: str = "report"
+    site: str,
+    rows: List[ReportRow],
+    start: datetime,
+    end: datetime,
+    report_type: str = "report",
+    store_to_file: bool = False,
 ) -> str:
     """Generate HTML report for a specific site."""
-    reports_dir = get_reports_dir()
-    filename = f"{report_type}_{site}_{start.strftime('%Y%m%d_%H%M')}_{end.strftime('%Y%m%d_%H%M')}.html"
-    filepath = os.path.join(reports_dir, filename)
+    filepath = None
+    if store_to_file:
+        reports_dir = get_reports_dir()
+        filename = f"{report_type}_{site}_{start.strftime('%Y%m%d_%H%M')}_{end.strftime('%Y%m%d_%H%M')}.html"
+        filepath = os.path.join(reports_dir, filename)
     html_rows = "".join(
         f"<tr><td>{sanitize_for_excel(row.key)}</td><td>{sanitize_for_excel(row.site)}</td><td>{row.count}</td>"
         f"<td>{sanitize_for_excel(row.error_message)}</td><td>{sanitize_for_excel(row.status)}</td>"
@@ -112,9 +119,11 @@ def generate_html_report(
     </body>
     </html>
     """
-    with open(filepath, "w", encoding="utf-8") as handle:
-        handle.write(html)
-    return filepath
+    if store_to_file:
+        with open(filepath, "w", encoding="utf-8") as handle:
+            handle.write(html)
+
+    return filepath, html
 
 
 def generate_combined_excel_report(

@@ -1,33 +1,28 @@
-FROM python:3.11-slim
+FROM public.ecr.aws/lambda/python:3.11
 
-# Set working directory
-WORKDIR /app
+# Optional: install minimal build tools if a package truly needs build (avoid where possible)
+RUN yum -y install make && yum clean all || true
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    gcc \
-    g++ \
-    && rm -rf /var/lib/apt/lists/*
+# Copy requirements early for caching
+COPY requirements.txt  ./
 
-# Copy requirements first for better caching
-COPY requirements.txt .
+# Upgrade pip tooling
+RUN python -m pip install --upgrade pip setuptools wheel
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Preinstall numpy as wheel to avoid compiling
+RUN python -m pip install --no-cache-dir --only-binary=:all: numpy==1.26.4 --target "${LAMBDA_TASK_ROOT}"
 
-# Copy only db_schema (src will be mounted from outside)
-COPY db_schema/ ./db_schema/
+# Install the rest of dependencies (allow sdists for pure-Python packages like pypika)
+RUN python -m pip install --no-cache-dir -r requirements.txt --target "${LAMBDA_TASK_ROOT}"
 
-# Create necessary directories
-RUN mkdir -p /app/data/chroma_db /app/reports /app/logs
+# Copy application code into Lambda task root
+COPY src/ ${LAMBDA_TASK_ROOT}/
+COPY db_schema/ ${LAMBDA_TASK_ROOT}/db_schema/
 
-# Set environment variables
-ENV PYTHONPATH=/app/src
+# Provide writable temp/report locations for Lambda
 ENV PYTHONUNBUFFERED=1
+ENV PYTHONPATH=${LAMBDA_TASK_ROOT}
+ENV TMPDIR=/tmp
 
-# Health check (optional - can be disabled)
-# HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-#     CMD python -m error_log_monitor.main test --site dev || exit 1
-
-# Default command - do nothing, wait for manual commands
-CMD ["sleep", "infinity"]
+# Default Lambda handler (override in Lambda console if needed)
+CMD ["error_log_monitor.lambda_daily_report.lambda_handler"]
