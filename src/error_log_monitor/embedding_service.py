@@ -22,6 +22,12 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+class ExceptionEmbeddingContextExceeded(RuntimeError):
+    """Exception raised when embedding context exceeds the maximum allowed length."""
+
+    pass
+
+
 def normalize_vector(vector: List[float]) -> List[float]:
     """
     Normalize vector to unit vector (length = 1).
@@ -177,10 +183,18 @@ class EmbeddingService:
             logger.debug(f"Generated {len(normalized_embeddings)} normalized embeddings")
             return normalized_embeddings
         except Exception as e:
-            error_msg = f"Failed to generate embeddings: {e}. Input: {texts}"
-            logger.error(error_msg, exc_info=True)
-            # Re-raise the exception instead of returning dummy embeddings
-            raise RuntimeError(error_msg) from e
+            if hasattr(e, 'message'):
+                if "This model's maximum context length is" in e.message:
+                    logger.error(e.message, exc_info=True)
+                    raise ExceptionEmbeddingContextExceeded(e.message) from e
+            elif "This model's maximum context length is" in str(e):
+                logger.error(str(e), exc_info=True)
+                raise ExceptionEmbeddingContextExceeded(e.message) from e
+            else:
+                error_msg = f"Failed to generate embeddings: {e}. Input: {texts}"
+                logger.error(error_msg, exc_info=True)
+                # Re-raise the exception instead of returning dummy embeddings
+                raise RuntimeError(error_msg) from e
 
     def generate_embedding(self, text: str) -> List[float]:
         """

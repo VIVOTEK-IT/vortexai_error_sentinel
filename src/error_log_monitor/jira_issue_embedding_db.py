@@ -11,7 +11,7 @@ from opensearchpy.client import OpenSearch
 
 from error_log_monitor.config import SystemConfig, JiraEmbeddingConfig
 from error_log_monitor.opensearch_client import ErrorLog, connect_opensearch
-from error_log_monitor.embedding_service import EmbeddingService
+from error_log_monitor.embedding_service import EmbeddingService, ExceptionEmbeddingContextExceeded
 from error_log_monitor.jira_cloud_client import JiraIssueDetails, JiraCloudClient
 
 
@@ -161,7 +161,10 @@ class JiraIssueEmbeddingDB:
         return mapped_fields
 
     def _generate_embedding_from_data(
-        self, data: Union[JiraIssueDetails, ErrorLog], reduce_length: Optional[bool] = False
+        self,
+        data: Union[JiraIssueDetails, ErrorLog],
+        reduce_length: Optional[bool] = False,
+        retry_count: Optional[int] = 0,
     ) -> Optional[List[float]]:
         """
         Generate embedding from JiraIssueDetails or ErrorLog object.
@@ -177,7 +180,9 @@ class JiraIssueEmbeddingDB:
             if isinstance(data, JiraIssueDetails) or isinstance(data, ErrorLog):
                 text_input = f"{data.error_message or ''} {data.error_type or ''} {data.traceback or ''}"
                 if reduce_length:
-                    text_input = f"{data.error_message[:45] or ''} {data.error_type or ''} {data.traceback[:200] or ''}"
+                    text_input = (
+                        f"{data.error_message[:500] or ''} {data.error_type[:200] or ''} {data.traceback[:200] or ''}"
+                    )
             else:
                 return None
 
@@ -197,8 +202,15 @@ class JiraIssueEmbeddingDB:
                 embedding = self.normalize_embedding(embedding)
 
             return embedding
+        except ExceptionEmbeddingContextExceeded as e:
+            if retry_count == 0:
+                return self._generate_embedding_from_data(data, reduce_length=True, retry_count=1)
+            else:
+                logger.error(f"Failed to generate embedding for Jira issue {data.key}: {e}", exc_info=True)
+                return None
 
-        except Exception:
+        except Exception as e:
+            logger.error(f"Failed to generate embedding for Jira issue {data.key}: {e}", exc_info=True)
             return None
 
     def _generate_embedding_from_text(self, text: str) -> Optional[List[float]]:

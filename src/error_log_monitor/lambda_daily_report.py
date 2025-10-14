@@ -52,7 +52,7 @@ Email test:
 import json
 import logging
 import sys
-from typing import Dict, Any
+from typing import Dict, Any, List
 import datetime
 from error_log_monitor.config import load_config
 from error_log_monitor.daily_report import DailyReportGenerator
@@ -93,6 +93,105 @@ setup_lambda_logging()
 logger = logging.getLogger(__name__)
 
 
+def send_daily_report(recipients: List[str], report_type: str) -> Dict[str, Any]:
+    if report_type not in ["daily", "weekly"]:
+        logger.error(f"Invalid report_type '{report_type}', defaulting to 'daily'")
+        return {
+            "statusCode": 500,
+            "body": json.dumps({"error": f"Invalid report_type '{report_type}'"}),
+        }
+
+    logger.info(f"🚀 Starting {report_type} report generation Lambda function")
+
+    # Load configuration
+    logger.info("🔧 Loading configuration...")
+    config = load_config()
+    logger.info("✅ Configuration loaded successfully")
+    if recipients:
+        config.email.recipients = recipients
+    # Initialize services (disable Excel generation for Lambda)
+    logger.info("🏗️ Initializing report generator...")
+    report_generator = DailyReportGenerator(generate_excel=False)
+    logger.info("✅ Report generator initialized")
+
+    logger.info("📧 Initializing email service...")
+    email_service = EmailService(config.email)
+    logger.info("✅ Email service initialized")
+
+    # Generate report based on type
+    if report_type == "weekly":
+        logger.info("📈 Generating weekly report...")
+        report_data = report_generator.generate_weekly_report()
+    else:
+        logger.info("📅 Generating daily report...")
+        report_data = report_generator.generate_daily_report()
+
+    logger.info("✅ Report generation completed")
+    logger.info(f"📊 Report data keys: {list(report_data.keys())}")
+
+    # Calculate total issues across all sites
+    total_issues = sum(len(site_data.get("issues", [])) for site_data in report_data.get("site_reports", {}).values())
+    logger.info(f"📈 Total issues found: {total_issues}")
+    logger.info(f"🏢 Sites with reports: {list(report_data.get('site_reports', {}).keys())}")
+
+    # Generate HTML email content
+    logger.info("🎨 Generating HTML email content...")
+    html_content = generate_daily_report_html_email(
+        site_reports=report_data.get("site_reports", {}),
+        start_date=report_data.get("start_date"),
+        end_date=report_data.get("end_date"),
+        total_issues=total_issues,
+    )
+    logger.info(f"✅ HTML content generated (length: {len(html_content)} chars)")
+
+    # Send email
+    logger.info(f"📧 Sending {report_type} report email...")
+    today = datetime.datetime.now().strftime("%Y-%m-%d")
+    subject = f"[{today}][Vortexai Error Issue] {report_type} issue report"
+    email_sent = email_service.send_daily_report_email(html_content, subject=subject)
+    logger.info(f"📧 Email send result: {email_sent}")
+
+    if not email_sent:
+        logger.error(f"Failed to send {report_type} report email")
+        return {
+            "statusCode": 500,
+            "body": json.dumps(
+                {
+                    "error": f"Failed to send {report_type} report email",
+                    "report_generated": True,
+                    "total_issues": total_issues,
+                    "report_type": report_type,
+                }
+            ),
+        }
+
+    # Prepare response
+    response_data = {
+        "message": f"{report_type.title()} report generated and sent successfully",
+        "report_type": report_type,
+        "report_period": {
+            "start_date": report_data.get("start_date").isoformat(),
+            "end_date": report_data.get("end_date").isoformat(),
+        },
+        "total_issues": total_issues,
+        "site_reports": {
+            site: {
+                "count": len(site_data.get("issues", [])),
+                "excel_path": site_data.get("excel_path"),
+                "html_path": site_data.get("html_path"),
+            }
+            for site, site_data in report_data.get("site_reports", {}).items()
+        },
+        "combined_excel_path": report_data.get("combined_excel_path"),
+        "email_sent": True,
+    }
+
+    logger.info(f"🎉 {report_type.title()} report completed successfully. Total issues: {total_issues}")
+    logger.info(f"📤 Response data: {json.dumps(response_data, default=str)}")
+
+    return {"statusCode": 200, "body": json.dumps(response_data, default=str)}
+
+
 def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
     """
     AWS Lambda handler for daily and weekly report generation and email sending.
@@ -105,110 +204,31 @@ def lambda_handler(event: Dict[str, Any], context: Any) -> Dict[str, Any]:
         Lambda response dictionary
     """
     try:
-        # Extract report type from event, default to "daily"
-        if 'recipient' in event:
-            recipients = event.get("recipient")
-        else:
-            recipients = None
-        report_type = event.get("report_type", "daily").lower()
-        if report_type not in ["daily", "weekly"]:
-            logger.warning(f"Invalid report_type '{report_type}', defaulting to 'daily'")
-            report_type = "daily"
-
-        logger.info(f"🚀 Starting {report_type} report generation Lambda function")
         logger.info(f"📊 Event data: {json.dumps(event, default=str)}")
         logger.info(f"⏰ Lambda context: {context}")
-
-        # Load configuration
-        logger.info("🔧 Loading configuration...")
-        config = load_config()
-        logger.info("✅ Configuration loaded successfully")
-        if recipients:
-            config.email.recipients = recipients
-        # Initialize services (disable Excel generation for Lambda)
-        logger.info("🏗️ Initializing report generator...")
-        report_generator = DailyReportGenerator(generate_excel=False)
-        logger.info("✅ Report generator initialized")
-
-        logger.info("📧 Initializing email service...")
-        email_service = EmailService(config.email)
-        logger.info("✅ Email service initialized")
-
-        # Generate report based on type
-        if report_type == "weekly":
-            logger.info("📈 Generating weekly report...")
-            report_data = report_generator.generate_weekly_report()
+        # Extract report type from event, default to "daily"
+        task = None
+        if 'task' in event:
+            task = event.get("task")
         else:
-            logger.info("📅 Generating daily report...")
-            report_data = report_generator.generate_daily_report()
-
-        logger.info("✅ Report generation completed")
-        logger.info(f"📊 Report data keys: {list(report_data.keys())}")
-
-        # Calculate total issues across all sites
-        total_issues = sum(
-            len(site_data.get("issues", [])) for site_data in report_data.get("site_reports", {}).values()
-        )
-        logger.info(f"📈 Total issues found: {total_issues}")
-        logger.info(f"🏢 Sites with reports: {list(report_data.get('site_reports', {}).keys())}")
-
-        # Generate HTML email content
-        logger.info("🎨 Generating HTML email content...")
-        html_content = generate_daily_report_html_email(
-            site_reports=report_data.get("site_reports", {}),
-            start_date=report_data.get("start_date"),
-            end_date=report_data.get("end_date"),
-            total_issues=total_issues,
-        )
-        logger.info(f"✅ HTML content generated (length: {len(html_content)} chars)")
-
-        # Send email
-        logger.info(f"📧 Sending {report_type} report email...")
-        today = datetime.datetime.now().strftime("%Y-%m-%d")
-        subject = f"[{today}][Vortexai Error Issue] {report_type} issue report"
-        email_sent = email_service.send_daily_report_email(html_content, subject=subject)
-        logger.info(f"📧 Email send result: {email_sent}")
-
-        if not email_sent:
-            logger.error(f"Failed to send {report_type} report email")
+            logger.error("No task provided")
             return {
                 "statusCode": 500,
-                "body": json.dumps(
-                    {
-                        "error": f"Failed to send {report_type} report email",
-                        "report_generated": True,
-                        "total_issues": total_issues,
-                        "report_type": report_type,
-                    }
-                ),
+                "body": json.dumps({"error": "No task provided"}),
             }
-
-        # Prepare response
-        response_data = {
-            "message": f"{report_type.title()} report generated and sent successfully",
-            "report_type": report_type,
-            "report_period": {
-                "start_date": report_data.get("start_date").isoformat(),
-                "end_date": report_data.get("end_date").isoformat(),
-            },
-            "total_issues": total_issues,
-            "site_reports": {
-                site: {
-                    "count": len(site_data.get("issues", [])),
-                    "excel_path": site_data.get("excel_path"),
-                    "html_path": site_data.get("html_path"),
-                }
-                for site, site_data in report_data.get("site_reports", {}).items()
-            },
-            "combined_excel_path": report_data.get("combined_excel_path"),
-            "email_sent": True,
-        }
-
-        logger.info(f"🎉 {report_type.title()} report completed successfully. Total issues: {total_issues}")
-        logger.info(f"📤 Response data: {json.dumps(response_data, default=str)}")
-
-        return {"statusCode": 200, "body": json.dumps(response_data, default=str)}
-
+        if task in ["send_daily_report_email", "send_weekly_report_email"]:
+            recipients = event.get("recipients", ["yenjie.chen@vivotek.com"])
+            if task == "send_daily_report_email":
+                report_type = "daily"
+            elif task == "send_weekly_report_email":
+                report_type = "weekly"
+            return send_daily_report(recipients, report_type)
+        else:
+            logger.error(f"Invalid task '{task}'")
+            return {
+                "statusCode": 500,
+                "body": json.dumps({"error": f"Invalid task '{task}'"}),
+            }
     except Exception as e:
         logger.error(f"❌ Error in {report_type} report Lambda function: {str(e)}", exc_info=True)
         logger.error(f"🔍 Exception type: {type(e).__name__}")
