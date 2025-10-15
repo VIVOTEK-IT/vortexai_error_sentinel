@@ -83,15 +83,19 @@ def generate_daily_report_html_email(
     total_stage_issues = len(site_reports.get("stage", {}).get("issues", []))
     total_prod_issues = len(site_reports.get("prod", {}).get("issues", []))
 
-    html_content = f"""
+    report_period = f"{start_date.strftime('%Y-%m-%d %H:%M')} to {end_date.strftime('%Y-%m-%d %H:%M')} UTC"
+
+    html_template = """
     <!DOCTYPE html>
     <html lang="en">
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Daily Error Report - {today}</title>
+        <meta name="color-scheme" content="light">
+        <meta name="supported-color-schemes" content="light">
+        <title>Daily Error Report - <<TODAY>></title>
         <style>
-            body {{
+            body {
                 font-family: Arial, sans-serif;
                 line-height: 1.6;
                 color: #333;
@@ -99,8 +103,8 @@ def generate_daily_report_html_email(
                 margin: 0 auto;
                 padding: 20px;
                 background-color: #f4f4f4;
-            }}
-            .header {{
+            }
+            .header {
                 background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
                 color: white;
                 padding: 30px;
@@ -108,118 +112,120 @@ def generate_daily_report_html_email(
                 text-align: center;
                 margin-bottom: 30px;
                 box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-            }}
-            .header h1 {{
+            }
+            .header h1 {
                 margin: 0;
                 font-size: 2.5em;
                 font-weight: 300;
-            }}
-            .header p {{
+            }
+            .header p {
                 margin: 10px 0 0 0;
                 font-size: 1.2em;
                 opacity: 0.9;
-            }}
-            .summary {{
+            }
+            .summary {
                 background: white;
+                color: #111111;
                 padding: 25px;
                 border-radius: 10px;
                 margin-bottom: 30px;
                 box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            }}
-            .summary h2 {{
+            }
+            .summary h2 {
                 color: #667eea;
                 margin-top: 0;
                 border-bottom: 2px solid #667eea;
                 padding-bottom: 10px;
-            }}
-            .stats-grid {{
+            }
+            .stats-grid {
                 display: grid;
                 grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
                 gap: 20px;
                 margin-top: 20px;
-            }}
-            .stat-card {{
+            }
+            .stat-card {
                 background: #f8f9fa;
                 padding: 20px;
                 border-radius: 8px;
                 text-align: center;
                 border-left: 4px solid #667eea;
-            }}
-            .stat-number {{
+            }
+            .stat-number {
                 font-size: 2em;
                 font-weight: bold;
                 color: #667eea;
                 margin-bottom: 5px;
-            }}
-            .stat-label {{
+            }
+            .stat-label {
                 color: #666;
                 font-size: 0.9em;
                 text-transform: uppercase;
                 letter-spacing: 1px;
-            }}
-            .site-section {{
+            }
+            .site-section {
                 background: white;
+                color: #111111;
                 margin-bottom: 30px;
                 border-radius: 10px;
                 overflow: hidden;
                 box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-            }}
-            .site-header {{
+            }
+            .site-header {
                 background: #667eea;
                 color: white;
                 padding: 20px;
                 margin: 0;
-            }}
-            .site-header h2 {{
+            }
+            .site-header h2 {
                 margin: 0;
                 font-size: 1.5em;
-            }}
-            .issues-table {{
+            }
+            .issues-table {
                 width: 100%;
                 border-collapse: collapse;
                 margin: 0;
-            }}
-            .issues-table th {{
+            }
+            .issues-table th {
                 background: #f8f9fa;
                 color: #333;
                 padding: 15px 12px;
                 text-align: left;
                 font-weight: 600;
                 border-bottom: 2px solid #dee2e6;
-            }}
-            .issues-table td {{
+            }
+            .issues-table td {
                 padding: 12px;
                 border-bottom: 1px solid #dee2e6;
                 vertical-align: top;
-            }}
-            .issues-table tr:hover {{
+            }
+            .issues-table tr:hover {
                 background-color: #f8f9fa;
-            }}
-            .status-badge {{
+            }
+            .status-badge {
                 display: inline-block;
                 padding: 4px 8px;
                 border-radius: 4px;
                 font-size: 0.8em;
                 font-weight: bold;
                 text-transform: uppercase;
-            }}
-            .status-open {{
+            }
+            .status-open {
                 background-color: #d4edda;
                 color: #155724;
-            }}
-            .status-in-progress {{
+            }
+            .status-in-progress {
                 background-color: #fff3cd;
                 color: #856404;
-            }}
-            .status-resolved {{
+            }
+            .status-resolved {
                 background-color: #d1ecf1;
                 color: #0c5460;
-            }}
-            .status-closed {{
+            }
+            .status-closed {
                 background-color: #f8d7da;
                 color: #721c24;
-            }}
-            .error-message {{
+            }
+            .error-message {
                 max-width: 300px;
                 min-width: 100px;
                 overflow: hidden;
@@ -227,69 +233,76 @@ def generate_daily_report_html_email(
                 white-space: nowrap;
                 word-wrap: break-word;
                 vertical-align: top;
-            }}
-            .count-badge {{
+            }
+            .count-badge {
                 background: #667eea;
                 color: white;
                 padding: 4px 8px;
                 border-radius: 12px;
                 font-size: 0.8em;
                 font-weight: bold;
-            }}
-            .no-issues {{
+            }
+            .no-issues {
                 text-align: center;
                 padding: 40px;
                 color: #666;
                 font-style: italic;
-            }}
-            .footer {{
+            }
+            .footer {
                 text-align: center;
                 margin-top: 40px;
                 padding: 20px;
                 color: #666;
                 font-size: 0.9em;
-            }}
-            .footer a {{
+            }
+            .footer a {
                 color: #667eea;
                 text-decoration: none;
-            }}
-            .jira-link {{
+            }
+            .jira-link {
                 color: #667eea;
                 text-decoration: none;
                 font-weight: bold;
-            }}
-            .jira-link:hover {{
+            }
+            .jira-link:hover {
                 text-decoration: underline;
-            }}
+            }
         </style>
+        <!--[if mso]>
+        <style type="text/css">
+          body, table, td, p, a, h1, h2, h3, h4, h5, h6 {
+            color: #111111 !important;
+            background-color: #ffffff !important;
+          }
+        </style>
+        <![endif]-->
     </head>
-    <body>
+    <body style="margin:0; padding:20px; background-color:#ffffff; color:#111111;">
         <div class="header">
             <h1>Daily Error Report</h1>
-            <p>{today} | VortexAI Error Monitoring System</p>
+            <p><<TODAY>> | VortexAI Error Monitoring System</p>
         </div>
 
         <div class="summary">
             <h2>📊 Summary</h2>
             <div class="stats-grid">
                 <div class="stat-card">
-                    <div class="stat-number">{total_issues}</div>
+                    <div class="stat-number"><<TOTAL_ISSUES>></div>
                     <div class="stat-label">Total Issues</div>
                 </div>
                 <div class="stat-card">
-                    <div class="stat-number">{total_stage_issues}</div>
+                    <div class="stat-number"><<TOTAL_STAGE>></div>
                     <div class="stat-label">Stage Issues</div>
                 </div>
                 <div class="stat-card">
-                    <div class="stat-number">{total_prod_issues}</div>
+                    <div class="stat-number"><<TOTAL_PROD>></div>
                     <div class="stat-label">Production Issues</div>
                 </div>
             </div>
-            <p><strong>Report Period:</strong> {start_date.strftime('%Y-%m-%d %H:%M')}
-            to {end_date.strftime('%Y-%m-%d %H:%M')} UTC</p>
+            <p><strong>Report Period:</strong> <<REPORT_PERIOD>></p>
         </div>
 
-        {no_issues_html}
+        <<NO_ISSUES_HTML>>
 
         <div class="footer">
             <p>Generated by VortexAI Error Monitoring System</p>
@@ -302,6 +315,15 @@ def generate_daily_report_html_email(
     </body>
     </html>
     """
+
+    html_content = (
+        html_template.replace("<<TODAY>>", today)
+        .replace("<<TOTAL_ISSUES>>", str(total_issues))
+        .replace("<<TOTAL_STAGE>>", str(total_stage_issues))
+        .replace("<<TOTAL_PROD>>", str(total_prod_issues))
+        .replace("<<REPORT_PERIOD>>", report_period)
+        .replace("<<NO_ISSUES_HTML>>", no_issues_html)
+    )
 
     return html_content
 
