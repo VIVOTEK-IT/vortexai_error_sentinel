@@ -94,21 +94,7 @@ def get_region_by_site(site: str) -> str:
 
 
 def clean_summary_for_creation(summary: str) -> str:
-    # 移除控制字符
     cleaned = summary.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
-
-    # 限制长度
-    if len(cleaned) > 255:
-        cleaned = cleaned[:252] + "..."
-
-    return cleaned.strip()
-
-
-def clean_summary_for_creation(summary: str) -> str:
-    # 移除控制字符
-    cleaned = summary.replace('\n', ' ').replace('\r', ' ').replace('\t', ' ')
-
-    # 限制长度
     if len(cleaned) > 255:
         cleaned = cleaned[:252] + "..."
 

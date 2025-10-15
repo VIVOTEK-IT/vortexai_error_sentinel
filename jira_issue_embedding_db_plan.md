@@ -205,39 +205,43 @@ Error Logs → Embedding Calculation → Similarity Search → Correlation
 
 ## 🔧 Technical Specifications
 
-### OpenSearch Index Schema
+### OpenSearch Index Schema (current)
 ```json
 {
   "mappings": {
     "properties": {
-      "key": {"type": "keyword"},
+      "key": { "type": "keyword" },
       "embedding": {
-        "type": "dense_vector",
-        "dims": 1536,
-        "index": true,
-        "similarity": "cosine"
+        "type": "knn_vector",
+        "dimension": 1536,
+        "method": {
+          "name": "hnsw",
+          "space_type": "innerproduct",
+          "engine": "faiss",
+          "parameters": { "ef_construction": 128, "m": 32 }
+        }
       },
       "occurrence_list": {
         "type": "nested",
         "properties": {
-          "doc_id": {"type": "keyword"},
-          "timestamp": {"type": "date"}
+          "doc_id": { "type": "keyword" },
+          "timestamp": { "type": "date", "format": "strict_date_optional_time||epoch_millis" }
         }
       },
-      "summary": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
-      "description": {"type": "text"},
-      "status": {"type": "keyword"},
-      "error_message": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
-      "error_type": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
-      "traceback": {"type": "text", "fields": {"keyword": {"type": "keyword"}}},
-      "site": {"type": "keyword"},
-      "request_id": {"type": "keyword"},
-      "created": {"type": "date"},
-      "updated": {"type": "date"},
-      "parent_issue_key": {"type": "keyword"},
-      "is_parent": {"type": "boolean"},
-      "created_at": {"type": "date"},
-      "updated_at": {"type": "date"}
+      "summary": { "type": "text", "fields": { "keyword": { "type": "keyword" } } },
+      "description": { "type": "text" },
+      "status": { "type": "keyword" },
+      "error_message": { "type": "text", "fields": { "keyword": { "type": "keyword" } } },
+      "error_type": { "type": "text", "fields": { "keyword": { "type": "keyword" } } },
+      "traceback": { "type": "text", "fields": { "keyword": { "type": "keyword" } } },
+      "site": { "type": "keyword" },
+      "request_id": { "type": "keyword" },
+      "created": { "type": "date" },
+      "updated": { "type": "date" },
+      "parent_issue_key": { "type": "keyword" },
+      "is_parent": { "type": "boolean" },
+      "created_at": { "type": "date" },
+      "updated_at": { "type": "date" }
     }
   },
   "settings": {
@@ -251,12 +255,16 @@ Error Logs → Embedding Calculation → Similarity Search → Correlation
 }
 ```
 
-### Dependencies
-- **OpenSearch**: Vector search and storage with inner product similarity (unit vectors required for cosine similarity)
-- **RAG Engine**: Embedding calculation via `_calculate_error_log_embeddings`
+### Dependencies (updated)
+- **OpenSearch**: kNN inner product with unit vectors (cosine-equivalent)
+- **EmbeddingService**: Text embeddings (text-embedding-3-small) and normalization
 - **Jira API**: Issue data retrieval
-- **OpenAI API**: Text embeddings (text-embedding-3-small)
-- **NumPy**: Vector normalization and mathematical operations
+- **NumPy**: Vector validation/normalization
+
+### Changes from earlier drafts
+- Removed year-based index rotation and `dense_vector` + cosine mapping in favor of single index template with `knn_vector` and innerproduct.
+- Replaced `RAGEngine` dependency with `EmbeddingService` for embedding generation.
+- Occurrence maintenance is considered backlog; correlation currently updates error logs with a Jira reference.
 
 ### Performance Requirements
 - **Response Time**: <100ms for similarity searches
@@ -299,21 +307,18 @@ Error Logs → Embedding Calculation → Similarity Search → Correlation
 - **Integration Issues**: Thorough testing with existing systems
 - **Scalability**: Design for horizontal scaling
 
-## 📋 Deliverables
+## 📋 Deliverables (aligned)
 
 ### Code Deliverables
-- [ ] `src/error_log_monitor/jira_issue_embedding_db.py`
-- [ ] Updated `src/error_log_monitor/config.py`
-- [ ] Updated `src/error_log_monitor/weekly_report.py`
-- [ ] Test suite: `test/test_jira_issue_embedding_db.py`
-- [ ] Migration utilities: `scripts/migrate_jira_embeddings.py`
+- `src/error_log_monitor/jira_issue_embedding_db.py`
+- Updated `src/error_log_monitor/config.py` (index template, embedding config)
+- Updated report flows to rely on EmbeddingService-based similarity
+- Tests under `test/` for kNN search, normalization, and add/find flows
 
 ### Documentation Deliverables
-- [ ] Updated `IMPLEMENTATION.md`
-- [ ] Updated `README.md`
-- [ ] API documentation
-- [ ] Usage examples and best practices
-- [ ] Deployment guide
+- Updated `IMPLEMENTATION.md`
+- Updated `README.md`
+- API usage and examples consistent with current code
 
 ### Configuration Deliverables
 - [ ] Updated `docker-compose.yml`

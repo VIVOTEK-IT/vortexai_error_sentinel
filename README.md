@@ -123,7 +123,11 @@ The Vortex Error Message Sentinel is designed to protect the Vortexai production
 
 2. **Run Weekly Report Generation**
    ```bash
-   python scripts/generate_weekly_report.py
+   # Simplified weekly report using embeddings
+   python scripts/run_weekly_report_2.py --start-date 2025-01-01 --end-date 2025-01-07
+
+   # Book-of-record weekly report (Jira + embeddings + error logs)
+   python scripts/generate_weekly_report_3.py --end-date 2025-01-07
    ```
 
 3. **Start the monitoring service**
@@ -139,7 +143,7 @@ vortex_error_sentinel/
 │   ├── config.py                   # Configuration management
 │   ├── opensearch_client.py        # OpenSearch integration
 │   ├── rds_client.py               # RDS database client
-│   ├── embedding_service.py        # AI embedding service
+│   ├── embedding_service.py        # Embedding generation and normalization
 │   ├── rag_engine.py               # RAG similarity engine
 │   ├── jira_cloud_client.py        # Jira Cloud API client
 │   ├── jira_issue_embedding_db.py  # Jira embedding database
@@ -259,21 +263,8 @@ db = JiraIssueEmbeddingDB(embedding_service, config)
 similar_issues = db.find_similar_jira_issue(error_log_embedding, site)
 ```
 
-#### `RAGEngine`
-Handles error log similarity analysis using RAG techniques.
-
-```python
-from error_log_monitor.rag_engine import RAGEngine
-
-# Initialize RAG engine
-rag = RAGEngine(embedding_service, opensearch_client)
-
-# Find similar errors
-similar_errors = rag.find_similar_errors(error_log, threshold=0.85)
-
-# Generate impact analysis
-analysis = rag.generate_impact_analysis(error_logs)
-```
+#### Embeddings
+Embeddings are generated and normalized via `EmbeddingService`.
 
 #### `WeeklyReportGenerator`
 Generates comprehensive weekly error analysis reports.
